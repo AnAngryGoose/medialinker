@@ -6,7 +6,9 @@ Two Python scripts that build a clean, Jellyfin/arr stack-compatible symlink tre
 
 ## What this does
 
-Takes a messy media folder and builds a clean, correctly structured library that Jellyfin, Radarr, and Sonarr can read — using symlinks only.
+Takes a messy media folder and builds a clean, correctly structured library that Jellyfin, Radarr, and Sonarr can read — using symlinks only. 
+
+Automatically, accurately seperating TV shows, miniseries, and Movies to correct folders for importing. 
 
 Basically, if you're library is a mess, run these 2 scripts and you're good to go. It should match everything, but it will warn you if it can't or you can set manual overrides inside the script itself. 
 
