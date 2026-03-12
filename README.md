@@ -6,7 +6,7 @@ Two Python scripts that build a clean, Jellyfin/arr stack-compatible symlink tre
 
 ## What this does
 
-**Automatic Restructure** - Takes a messy media folder and builds a clean, correctly structured library that Jellyfin, Radarr, and Sonarr can read — using symlinks only. 
+**Automatic Restructure** - Takes a messy media folder and builds a clean, correctly structured library that Jellyfin, Radarr, and Sonarr can read - using symlinks only. 
 
 **Automatic Media Seperation** - Automatically, accurately seperating TV shows, miniseries, and Movies to correct folders for importing. 
   - Automatic media type matching with TMDB lookup matching, symlinking, and restructuring.
@@ -53,7 +53,7 @@ More info on the functions are under the sections below.
 
 Symlink targets are always **absolute container-side paths** so they resolve correctly inside Docker regardless of working directory or mount structure.
 
-Hardlinks are intentionally not used — on mergerfs pools, `movies/` and `movies-linked/` can land on different underlying branches, causing `os.link()` to fail with `EXDEV`. Absolute symlinks work on all filesystems, always.
+Hardlinks are intentionally not used - on mergerfs pools, `movies/` and `movies-linked/` can land on different underlying branches, causing `os.link()` to fail with `EXDEV`. Absolute symlinks work on all filesystems, always.
 
 > Reference: [TRaSH Guides - Hardlinks and Instant Moves](https://trash-guides.info/File-and-Folder-Structure/How-to-set-up/Hardlinks/)
 
@@ -100,10 +100,10 @@ movies-linked/
     Movie Name (Year) - 1080P.2.mkv    ← two copies at same resolution
 ```
 
-- Detects and skips multi-episode folders — those go to `tv-linked/` via `make_tv_links.py`
+- Detects and skips multi-episode folders - those go to `tv-linked/` via `make_tv_links.py`
 - Multiple versions of the same title+year get quality suffixes instead of being discarded
 - Year must be preceded by a separator so numeric titles like `1917` or `2001` aren't misread as release years
-- Entries with no detectable year are flagged — at end of run you can auto-resolve via TMDB or leave for manual matching
+- Entries with no detectable year are flagged - at end of run you can auto-resolve via TMDB or leave for manual matching
 - Illegal filename characters (`/ : \ ? * " < > |`) replaced with `-`
 
 ### `make_tv_links.py`
@@ -122,7 +122,7 @@ tv-linked/
 
 - Bare season folders (`Show.S01.720p...`) are grouped by show name automatically
 - Miniseries sitting in `/movies/` (2+ episode files) are detected and routed to `tv-linked/` instead
-- Show name matching is case-insensitive and apostrophe-agnostic — `Blue's Clues`, `Blues Clues`, and `blues clues` all resolve to the same group
+- Show name matching is case-insensitive and apostrophe-agnostic - `Blue's Clues`, `Blues Clues`, and `blues clues` all resolve to the same group
 - Trailing years are stripped from show names (`Bluey 2018` → `Bluey`)
 - Episode formats detected: `S01E01`, `1x01`, `Episode.N`, `NofN`, bare `E01`
 - Bare `E01`-format releases (no `S01` in folder name) are auto-detected as Season 1 via file/subdir scanning
@@ -204,7 +204,7 @@ TMDB_API_KEY = "your_key_here"
 
 ### 3. Overrides (TV script only)
 
-**`NAME_OVERRIDES`** — fix show names that parse inconsistently across seasons, or that don't match TVDB. Run `--dry-run` first and check `[TV SOURCE]` to see what names are being parsed.
+**`NAME_OVERRIDES`** - fix show names that parse inconsistently across seasons, or that don't match TVDB. Run `--dry-run` first and check `[TV SOURCE]` to see what names are being parsed.
 
 ```python
 NAME_OVERRIDES = {
@@ -212,7 +212,7 @@ NAME_OVERRIDES = {
 }
 ```
 
-**`ORPHAN_OVERRIDES`** — for folders literally named `Season 1/` with no show name in the folder itself. These show up in `[TV PASS-THROUGH]` during a dry run.
+**`ORPHAN_OVERRIDES`** - for folders literally named `Season 1/` with no show name in the folder itself. These show up in `[TV PASS-THROUGH]` during a dry run.
 
 ```python
 ORPHAN_OVERRIDES = {
@@ -225,4 +225,4 @@ ORPHAN_OVERRIDES = {
 
 ## Requirements
 
-Python 3.6+ — stdlib only, no dependencies.
+Python 3.6+ - stdlib only, no dependencies.

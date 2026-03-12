@@ -4,7 +4,7 @@ make_tv_links.py  [v1.1]
 
 Builds a Jellyfin/Sonarr-compatible symlink tree from disorganized TV and
 miniseries folders. Reads from /tv/ and /movies/, writes clean structure
-to /tv-linked/. Original files are never modified — torrent clients keep
+to /tv-linked/. Original files are never modified - torrent clients keep
 seeding unaffected.
 
 Output structure:
@@ -24,7 +24,7 @@ Sources:
             and symlinked under Show Name/Season XX/. Folders already in
             correct Jellyfin structure are symlinked as-is (pass-through).
   /movies/  Folders containing 2+ episode files are treated as miniseries
-            and symlinked into tv-linked/ — they are NOT moved on disk.
+            and symlinked into tv-linked/ - they are NOT moved on disk.
 
   To change mount paths, update only these two constants at the top of the file:
     MEDIA_ROOT_HOST      = "/mnt/storage/data/media"
@@ -120,7 +120,7 @@ RE_XNOTATION = re.compile(r'\d{1,2}x\d{2}', re.IGNORECASE)  # e.g. 1x01, 01x09
 RE_EPISODE   = re.compile(r'[Ee]pisode[. _](\d{1,3})', re.IGNORECASE)
 RE_NOF       = re.compile(r'[\(]?(\d{1,2})of(\d{1,2})[\)]?', re.IGNORECASE)
 RE_SAMPLE    = re.compile(r'\bsample\b', re.IGNORECASE)
-# Bare E01 format (no season prefix) — e.g. Band.Of.Brothers.E01, BBC.Life.E02
+# Bare E01 format (no season prefix) - e.g. Band.Of.Brothers.E01, BBC.Life.E02
 RE_BARE_EPISODE = re.compile(r'(?<![Ss\d])E(\d{2,3})\b')
 
 RE_STRIP = re.compile(
@@ -155,7 +155,7 @@ RE_ILLEGAL_CHARS = re.compile(r'[/:\\?*"<>|]')
 #   "The Office US": "The Office (US)",
 #   "Scooby-Doo Where Are You": "Scooby Doo Where Are You",
 
-#    # "3000" is stripped as a number token — override to preserve full title
+#    # "3000" is stripped as a number token - override to preserve full title
 #    "Mystery Science Theater":   "Mystery Science Theater 3000",
 NAME_OVERRIDES = {
 
@@ -165,18 +165,18 @@ NAME_OVERRIDES = {
 
 # ORPHAN_OVERRIDES: map bare "Season N" folders (no show name in the
 # folder itself) to their correct show. Run --dry-run first to identify
-# orphans — they appear in [TV PASS-THROUGH] without a parent show name.
+# orphans - they appear in [TV PASS-THROUGH] without a parent show name.
 #
 # Format: "folder name on disk" -> ("Show Name", season_number)
 ORPHAN_OVERRIDES = {
-    # Little Bear — bare Season N folders with no show name in the folder itself
+    # Little Bear - bare Season N folders with no show name in the folder itself
     #"Season 1": ("Little Bear", 1),
 
-    # Folders using "Season.N" naming instead of "S04" — files inside are
+    # Folders using "Season.N" naming instead of "S04" - files inside are
     # standard S04E01 format so is_bare_episode_folder() won't catch them
     # "The Blue Planet Season 1": ("The Blue Planet", 1),
 
-    # Planet Earth — folder has no S01 and files use abbreviated "pe.s01e01" prefix
+    # Planet Earth - folder has no S01 and files use abbreviated "pe.s01e01" prefix
     # so neither SEASON_RE nor is_bare_episode_folder() can detect it
     #"Planet.Earth.1080p.BluRay.x264-CULTHD": ("Planet Earth", 1),
 }
@@ -245,7 +245,7 @@ def episode_info(filename):
 
 def is_bare_episode_folder(folder_path):
     """
-    True if a folder contains 2+ bare E\\d+ episode entries — either:
+    True if a folder contains 2+ bare E\\d+ episode entries - either:
     - Direct video files named with bare E\\d+ (e.g. Band.Of.Brothers.E01....mkv)
     - Subdirectories named with bare E\\d+ (e.g. BBC.Life.E01.../BBC.Frozen.Planet.E02...)
       where each subdir holds one episode file
@@ -419,11 +419,11 @@ def collect_warnings(tv_grouped, tv_passthrough):
     """
     Detect two classes of issue and return a list of warning strings:
 
-    1. Duplicate season numbers within a grouped show — two source folders
+    1. Duplicate season numbers within a grouped show - two source folders
        on disk both parsed to the same show + season. The second symlink will
        be silently skipped; the duplicate source folder should be investigated.
 
-    2. Name overlap between grouped shows and pass-through folders — a
+    2. Name overlap between grouped shows and pass-through folders - a
        pass-through folder normalizes to the same name as a grouped show,
        meaning tv-linked/ will contain two separate entries for the same show
        (one built from bare season folders, one pass-through). Jellyfin may
@@ -450,7 +450,7 @@ def collect_warnings(tv_grouped, tv_passthrough):
         if norm in grouped_normalized:
             warnings.append(
                 f"Name overlap: grouped show '{grouped_normalized[norm]}' and "
-                f"pass-through '{pt_entry}' resolve to the same name — "
+                f"pass-through '{pt_entry}' resolve to the same name - "
                 f"tv-linked/ will have two separate entries"
             )
 
@@ -526,7 +526,7 @@ def main(dry_run, clean):
 
     print("=" * 60)
     if dry_run:
-        print("DRY RUN complete — no files or folders created.")
+        print("DRY RUN complete - no files or folders created.")
         print("Run without --dry-run to apply.")
     else:
         print(f"\nDone. Point Jellyfin/Sonarr at: {TV_LINKED}")

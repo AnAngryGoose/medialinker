@@ -4,7 +4,7 @@ make_movies_links.py  [v1.1]
 
 Builds a Jellyfin/Radarr-compatible symlink tree from a disorganized movies
 folder. Reads from /movies/, writes clean structure to /movies-linked/.
-Original files are never modified — torrent clients keep seeding unaffected.
+Original files are never modified - torrent clients keep seeding unaffected.
 
 Output structure:
   movies-linked/
@@ -99,19 +99,19 @@ VIDEO_EXTS = {".mkv", ".mp4", ".avi", ".ts", ".m4v"}
 ### --- END CONFIG SECTION --- ###
 ##################################
 
-# Episode detection — folders matching these are miniseries, skip them
+# Episode detection - folders matching these are miniseries, skip them
 RE_SXXEXX  = re.compile(r'[Ss](\d{1,2})[Ee](\d{2})', re.IGNORECASE)
 RE_XNOTATION = re.compile(r'\d{1,2}x\d{2}', re.IGNORECASE)   # e.g. 1x01, 01x09
 RE_EPISODE = re.compile(r'[Ee]pisode[. _](\d{1,3})', re.IGNORECASE)
 RE_NOF     = re.compile(r'[\(]?(\d{1,2})of(\d{1,2})[\)]?', re.IGNORECASE)
-# Bare E01 format (no season prefix) — e.g. Band.Of.Brothers.E01, BBC.Life.E02
+# Bare E01 format (no season prefix) - e.g. Band.Of.Brothers.E01, BBC.Life.E02
 # Negative lookbehind prevents matching S01E01 (already caught by RE_SXXEXX)
 RE_BARE_EPISODE = re.compile(r'(?<![Ss\d])E(\d{2,3})\b')
 
-# Sample file detection — word-boundary match to avoid false positives like "example.mkv"
+# Sample file detection - word-boundary match to avoid false positives like "example.mkv"
 RE_SAMPLE = re.compile(r'\bsample\b', re.IGNORECASE)
 
-# Year extraction — must be preceded by a separator to avoid matching titles like "1917"
+# Year extraction - must be preceded by a separator to avoid matching titles like "1917"
 RE_YEAR = re.compile(r'(?<=[.\s\[\(])((?:19|20)\d{2})(?=[.\s\]\)]|$)')
 
 # Quality tag extraction for multi-version naming
@@ -267,13 +267,13 @@ def scan_movies():
     """
     Scan MOVIES_SOURCE.
 
-    Multiple versions of the same movie (same title + year) are kept — each gets
+    Multiple versions of the same movie (same title + year) are kept - each gets
     a quality suffix appended to the link filename so they coexist in one folder.
 
     Returns:
-      movies   — [(entry, title, year, video_path, quality), ...]
-      flagged  — [(entry, reason), ...]
-      skipped  — [entry, ...]  miniseries folders
+      movies   - [(entry, title, year, video_path, quality), ...]
+      flagged  - [(entry, reason), ...]
+      skipped  - [entry, ...]  miniseries folders
     """
     movies  = []
     flagged = []
@@ -332,13 +332,13 @@ def scan_movies():
             flagged.append((name, "could not parse title"))
             continue
         if not year:
-            flagged.append((name, "no year found — needs manual match"))
+            flagged.append((name, "no year found - needs manual match"))
             continue
 
         link_key = f"{title} ({year})"
         seen.setdefault(link_key, []).append((name, video_path, quality))
 
-    # Resolve seen into final movies list — multi-version gets quality suffix.
+    # Resolve seen into final movies list - multi-version gets quality suffix.
     # If two versions share the same quality tag, append .2, .3, etc. to disambiguate.
     for link_key, versions in seen.items():
         m = re.match(r'^(.+) \((\d{4})\)$', link_key)
@@ -361,7 +361,7 @@ def scan_movies():
             for _, _, quality in resolved:
                 quality_counts[quality] = quality_counts.get(quality, 0) + 1
 
-            # Assign suffixes — unique qualities get no counter, duplicates get .2, .3, ...
+            # Assign suffixes - unique qualities get no counter, duplicates get .2, .3, ...
             quality_seen = {}
             for entry_name, video_path, quality in resolved:
                 if quality_counts[quality] == 1:
@@ -384,7 +384,7 @@ def resolve_flagged_via_tmdb(flagged, dry_run):
     print(f"\n[TMDB LOOKUP] {'(dry run) ' if dry_run else ''}Resolving flagged entries...\n")
 
     no_year = [(entry, reason) for entry, reason in flagged
-               if reason == "no year found — needs manual match"]
+               if reason == "no year found - needs manual match"]
 
     def lookup(entry):
         title = clean_title(entry)
@@ -480,19 +480,19 @@ def main(dry_run, clean):
 
     print("\n" + "=" * 60)
     if dry_run:
-        print("DRY RUN complete — no files or folders created.")
+        print("DRY RUN complete - no files or folders created.")
         print("Run without --dry-run to apply.")
     else:
         print(f"\nDone. Point Jellyfin/Radarr at: {MOVIES_LINKED}")
 
-    no_year_flagged = [f for f in flagged if f[1] == "no year found — needs manual match"]
+    no_year_flagged = [f for f in flagged if f[1] == "no year found - needs manual match"]
     if no_year_flagged:
         print(f"\n{len(no_year_flagged)} entries flagged (no year found).")
         if dry_run:
             print("  (run without --dry-run to use TMDB auto-lookup)")
         else:
             print("  [1] Auto-lookup via TMDB and create symlinks")
-            print("  [2] Skip — match manually later")
+            print("  [2] Skip - match manually later")
             choice = input("\nChoice: ").strip()
             if choice == "1":
                 resolve_flagged_via_tmdb(no_year_flagged, dry_run)
