@@ -19,7 +19,7 @@ tree from a disorganized media library. This will not touch/move the existing fi
 
     - Can then be used as clean slate for Arr integration after.
   
-- **Detects and separates** TV/miniseries from movie content automatically — nothing manual
+- **Detects and separates** TV/miniseries from movie content automatically - nothing manual
     
     - This was my main issue. I had miniseries/tv mixed with the Movies folder. This will seperate them automatically.
 
@@ -83,17 +83,17 @@ All hit at least one of these walls for me with a messy existing library:
 ## How it works
 
 ```
-/movies/                         /tv/
-  Some.Movie.2020.mkv              Show.Name.S01.720p.../
-  Show.Name.S01.720p.../           Show.Name.S02.1080p.../
-  ...                              ...
+/movies/                            /tv/
+  Some.Movie.2020.mkv                   Show.Name.S01.720p.../
+  Show.Name.S01.720p.../                Show.Name.S02.1080p.../
+    ...                                       ...
 
-         ↓ make_movies_links.py        ↓ make_tv_links.py
+         -- make_movies_links.py        -- make_tv_links.py
 
-/movies-linked/                  /tv-linked/
-  Some Movie (2020)/               Show Name/
-    Some Movie (2020).mkv  ──→       Season 01/  ──→ /tv/Show.Name.S01.../
-                                     Season 02/  ──→ /tv/Show.Name.S02.../
+/movies-linked/                     /tv-linked/
+  Some Movie (2020)/                    Show Name/
+    Some Movie (2020).mkv  ──→              Season 01/  ──→ /tv/Show.Name.S01.../
+                                            Season 02/  ──→ /tv/Show.Name.S02.../
 ```
 
 All symlink targets are **absolute container-side paths** (e.g. `/data/media/movies/...`),
@@ -105,7 +105,7 @@ Absolute symlinks work on all filesystems, always.
 
 I split this across 2 diffrent scripts, one for movies, and one for TV. The movie script is rather straightforward. The TV script can scan for TV shows as well as miniseries seperately, pull them from a different folder (like your /movies/ folder) and group them together so it can be picked up correctly in Jellyfin. 
 
-> Reference: [TRaSH Guides — Hardlinks and Instant Moves](https://trash-guides.info/File-and-Folder-Structure/How-to-set-up/Hardlinks/)
+> Reference: [TRaSH Guides - Hardlinks and Instant Moves](https://trash-guides.info/File-and-Folder-Structure/How-to-set-up/Hardlinks/)
 
 ---
 
@@ -146,7 +146,7 @@ movies-linked/
   - **Sample exclusion**: word-boundary match (\bsample\b) avoids false positives
     like example.mkv.
 
-  - **Performance**: os.scandir() used throughout to avoid redundant stat() calls.
+  - **Performance**: os.scandir() used throughout to avoid redundant stat() calls. This is more useful on VERY large libraries (20k+ folders), but works well on all sizes. 
  
 **Original files are NEVER modified. Torrent clients keeps seeding from original paths.**
 
@@ -202,7 +202,7 @@ tv-linked/
   - **Sample exclusion**: word-boundary match (\\bsample\\b) avoids false positives
     like example.mkv.
 
-  - **Performance**: os.scandir() used throughout to avoid redundant stat() calls.
+  - **Performance**: os.scandir() used throughout to avoid redundant stat() calls. This is more useful on VERY large libraries (20k+ folders), but works well on all sizes. 
   
 **Original files are NEVER modified. Torrent clients keeps seeding from original paths.**
 
@@ -229,7 +229,7 @@ MEDIA_ROOT_CONTAINER = "/data/media"               # same path as seen inside Do
 `MEDIA_ROOT_HOST` is used to find files on disk. `MEDIA_ROOT_CONTAINER` is written
 into the symlink targets so they resolve correctly inside Jellyfin/Radarr/Sonarr.
 
-**NOTE:** you're not running inside Docker, set both to the same value.
+**NOTE:** if you're not running inside Docker, set both to the same value.
 
 ### 2. TMDB API key (movies script only)
 
@@ -252,7 +252,7 @@ TMDB_API_KEY = "your_key_here"
 
 Open `make_tv_links.py` and edit the two sections near the top:
 
-**`NAME_OVERRIDES`** — use when the same show's season folders match to different names,
+**`NAME_OVERRIDES`** - use when the same show's season folders match to different names,
 or when the matched name doesn't match TVDB. Run `--dry-run` first and check the
 `[TV SOURCE]` section to see what names are being parsed.
 
@@ -263,7 +263,7 @@ NAME_OVERRIDES = {
 }
 ```
 
-**`ORPHAN_OVERRIDES`** — use when a folder is literally named `Season 1/` with no show
+**`ORPHAN_OVERRIDES`** - use when a folder is literally named `Season 1/` with no show
 name. These show up in `[TV PASS-THROUGH]` during a dry run.
 
 ```python
@@ -275,7 +275,7 @@ ORPHAN_OVERRIDES = {
 
 ---
 
-## Recommended workflow
+## Recommended usage
 
 ```bash
 # 1. Dry run both scripts and review output in a text file. 
@@ -296,4 +296,4 @@ python3 make_tv_links.py
 
 ## Requirements
 
-Python 3.6+ — stdlib only, no dependencies.
+Python 3.6+ - stdlib only, no dependencies.
