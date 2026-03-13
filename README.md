@@ -11,6 +11,7 @@ Two Python scripts that build a clean, Jellyfin/arr stack-compatible symlink tre
 **Automatic Media Seperation** - Automatically, accurately seperating TV shows, miniseries, and Movies to correct folders for importing. 
   - Automatic media type matching with TMDB lookup matching, symlinking, and restructuring.
     - Manual TMDB lookup for anything it can't match on its own
+    - Will give a prompt if something could be potentially matched wrong. 
 
 **Handles mixed file formats**, naming conventions, folder structures
   - Well, it handles most of them used by files people add to arr stack.
@@ -19,17 +20,16 @@ Two Python scripts that build a clean, Jellyfin/arr stack-compatible symlink tre
   - Works with different (1080p vs. 4k) and same (2 1080p files) resolutions.
 
 **Only uses absolute symlinks.**
-  - Hardlinks can cause issues with MergerFS pools. 
-  - Absolute symlinks work on everything always.
+  - Hardlinks can cause issues with MergerFS pools. (will create hardlink version)
 
 **Works fast.**
-  - Scanned, matched, symlinked, and created structure for 1000 movie folders in about 1 second.
+  - Scanned, matched, symlinked, and created structure for 1000 movie folders in just a few seconds.
   - Absolute over relative symlinks also fix any pathing issue with Docker containers.
-  - 
+
 
 Basically, if you're library is a mess, run these 2 scripts and you're good to go. It should match everything, but it will warn you if it can't or you can set manual overrides inside the script itself. 
 
-This will sort your movies folder as well as TV. It will auto scan and detect TV shows/miniseries regardless of the files mixed in same dir. Movies/TV in same folder will be seperated automatically.
+This will sort your movies folder as well as TV. It will auto scan and detect TV shows/miniseries regardless of the files mixed in same dir. Movies/TV in same folder will be seperated automatically. It will prompt for any ambiguous things to confirm match instruction. 
 
 The matching works pretty well regardless of the formatting of the existing files. 
 
@@ -226,3 +226,11 @@ ORPHAN_OVERRIDES = {
 ## Requirements
 
 Python 3.6+ - stdlib only, no dependencies.
+
+## Changelog
+
+v1.2: 
+
+`make_movies_links.py` — added `RE_PART`, `is_ambiguous_parts_folder()`, ambiguous detection in `scan_movies()`, and the interactive prompt in `main()`
+
+`make_tv_links.py` — added `RE_PART` and Part.N as last-resort pattern in `episode_info()`. Once you route  folders with PartN files to TV via the movies prompt, the TV script will count both Part files as episodes and route the folder correctly into `tv-linked/`.

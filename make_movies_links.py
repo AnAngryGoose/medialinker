@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-make_movies_links.py  [v1.1]
+make_movies_links.py  [v1.2]
 
 Builds a Jellyfin/Radarr-compatible symlink tree from a disorganized movies
 folder. Reads from /movies/, writes clean structure to /movies-linked/.
-Original files are never modified - torrent clients keep seeding unaffected.
+Original files are never modified — torrent clients keep seeding unaffected.
 
 Output structure:
   movies-linked/
@@ -51,7 +51,10 @@ Features:
     - Year/title matching protection:
         - Year must be preceded by a separator (dot, space, bracket, paren)
         - This will prevent a movie like "1917" being tagged as FROM 1917
-            -  Man that'd be a different movie, much darker.
+            -  Man that'd be a different movie. 
+
+    - Ambiguous match prompt: If something could potentially be matched wrong, a prompt at the end should 
+      alert to confirm path to follow
 
     - Various misc stuff:
         - Sample exclusion: word-boundary match (\bsample\b) avoids false positives
@@ -99,19 +102,19 @@ VIDEO_EXTS = {".mkv", ".mp4", ".avi", ".ts", ".m4v"}
 ### --- END CONFIG SECTION --- ###
 ##################################
 
-# Episode detection - folders matching these are miniseries, skip them
+# Episode detection — folders matching these are miniseries, skip them
 RE_SXXEXX  = re.compile(r'[Ss](\d{1,2})[Ee](\d{2})', re.IGNORECASE)
 RE_XNOTATION = re.compile(r'\d{1,2}x\d{2}', re.IGNORECASE)   # e.g. 1x01, 01x09
 RE_EPISODE = re.compile(r'[Ee]pisode[. _](\d{1,3})', re.IGNORECASE)
 RE_NOF     = re.compile(r'[\(]?(\d{1,2})of(\d{1,2})[\)]?', re.IGNORECASE)
-# Bare E01 format (no season prefix) - e.g. Band.Of.Brothers.E01, BBC.Life.E02
+# Bare E01 format (no season prefix) — e.g. Band.Of.Brothers.E01, BBC.Life.E02
 # Negative lookbehind prevents matching S01E01 (already caught by RE_SXXEXX)
 RE_BARE_EPISODE = re.compile(r'(?<![Ss\d])E(\d{2,3})\b')
 
-# Sample file detection - word-boundary match to avoid false positives like "example.mkv"
+# Sample file detection — word-boundary match to avoid false positives like "example.mkv"
 RE_SAMPLE = re.compile(r'\bsample\b', re.IGNORECASE)
 
-# Year extraction - must be preceded by a separator to avoid matching titles like "1917"
+# Year extraction — must be preceded by a separator to avoid matching titles like "1917"
 RE_YEAR = re.compile(r'(?<=[.\s\[\(])((?:19|20)\d{2})(?=[.\s\]\)]|$)')
 
 # Quality tag extraction for multi-version naming
@@ -137,6 +140,11 @@ RE_STRIP = re.compile(
 
 # Characters illegal on Windows filesystems / problematic on network mounts
 RE_ILLEGAL_CHARS = re.compile(r'[/:\\?*"<>|]')
+
+# Part.N detection — matches ".Part.1", ".Part1", " Part 2" etc.
+# \d{1,2} intentionally excludes 4-digit years (e.g. "Bande a part 1964").
+# Roman numerals not supported — numeric only.
+RE_PART = re.compile(r'[.\s\-_](?:Part|Pt)[.\s\-_]?(\d{1,2})\b', re.IGNORECASE)
 
 
 def is_video(filename):
@@ -165,6 +173,30 @@ def is_miniseries_folder(folder_path):
             if episodes >= 2:
                 return True
     return False
+
+
+def is_ambiguous_parts_folder(folder_path):
+    """
+    True if folder contains 2+ video files using Part.N naming with no standard
+    episode markers (S01E01, 1x01, Episode.N, NofN, bare E01).
+
+    These cannot be automatically routed — a 2-part documentary belongs in
+    tv-linked/ (Sonarr), but "Deathly Hallows Part 1" is a standalone movie.
+    Caller is responsible for prompting the user.
+
+    Returns (is_ambiguous: bool, part_files: list[str])
+    """
+    part_files = []
+    with os.scandir(folder_path) as it:
+        for entry in it:
+            if (entry.is_file()
+                    and is_video(entry.name)
+                    and not is_sample(entry.name)
+                    and not is_episode(entry.name)
+                    and RE_PART.search(entry.name)):
+                part_files.append(entry.name)
+    part_files.sort()
+    return len(part_files) >= 2, part_files
 
 
 def extract_year(name):
@@ -267,17 +299,19 @@ def scan_movies():
     """
     Scan MOVIES_SOURCE.
 
-    Multiple versions of the same movie (same title + year) are kept - each gets
+    Multiple versions of the same movie (same title + year) are kept — each gets
     a quality suffix appended to the link filename so they coexist in one folder.
 
     Returns:
-      movies   - [(entry, title, year, video_path, quality), ...]
-      flagged  - [(entry, reason), ...]
-      skipped  - [entry, ...]  miniseries folders
+      movies    — [(entry, title, year, video_path, quality), ...]
+      flagged   — [(entry, reason), ...]
+      skipped   — [entry, ...]  miniseries folders
+      ambiguous — [(entry, part_files), ...]  Part.N folders needing manual routing
     """
     movies  = []
     flagged = []
     skipped = []
+    ambiguous = []
     # link_key -> list of (entry, video_path, quality) for collision handling
     seen = {}
 
@@ -303,6 +337,13 @@ def scan_movies():
 
         # --- folder ---
         elif entry.is_dir():
+            # Check for Part.N ambiguity before standard miniseries detection.
+            # 2+ Part.N files with no episode markers = cannot auto-route.
+            is_parts, part_files = is_ambiguous_parts_folder(entry.path)
+            if is_parts:
+                ambiguous.append((name, part_files))
+                continue
+
             if is_miniseries_folder(entry.path):
                 skipped.append(name)
                 continue
@@ -332,13 +373,13 @@ def scan_movies():
             flagged.append((name, "could not parse title"))
             continue
         if not year:
-            flagged.append((name, "no year found - needs manual match"))
+            flagged.append((name, "no year found — needs manual match"))
             continue
 
         link_key = f"{title} ({year})"
         seen.setdefault(link_key, []).append((name, video_path, quality))
 
-    # Resolve seen into final movies list - multi-version gets quality suffix.
+    # Resolve seen into final movies list — multi-version gets quality suffix.
     # If two versions share the same quality tag, append .2, .3, etc. to disambiguate.
     for link_key, versions in seen.items():
         m = re.match(r'^(.+) \((\d{4})\)$', link_key)
@@ -361,7 +402,7 @@ def scan_movies():
             for _, _, quality in resolved:
                 quality_counts[quality] = quality_counts.get(quality, 0) + 1
 
-            # Assign suffixes - unique qualities get no counter, duplicates get .2, .3, ...
+            # Assign suffixes — unique qualities get no counter, duplicates get .2, .3, ...
             quality_seen = {}
             for entry_name, video_path, quality in resolved:
                 if quality_counts[quality] == 1:
@@ -373,7 +414,7 @@ def scan_movies():
                 movies.append((entry_name, title, year, video_path, label))
 
     movies.sort(key=lambda x: (x[1].lower(), x[2]))
-    return movies, flagged, skipped
+    return movies, flagged, skipped, ambiguous
 
 
 def resolve_flagged_via_tmdb(flagged, dry_run):
@@ -384,7 +425,7 @@ def resolve_flagged_via_tmdb(flagged, dry_run):
     print(f"\n[TMDB LOOKUP] {'(dry run) ' if dry_run else ''}Resolving flagged entries...\n")
 
     no_year = [(entry, reason) for entry, reason in flagged
-               if reason == "no year found - needs manual match"]
+               if reason == "no year found — needs manual match"]
 
     def lookup(entry):
         title = clean_title(entry)
@@ -449,7 +490,7 @@ def main(dry_run, clean):
 
     ensure_dir(MOVIES_LINKED, dry_run)
 
-    movies, flagged, skipped = scan_movies()
+    movies, flagged, skipped, ambiguous = scan_movies()
 
     print(f"\n{'[DRY RUN] ' if dry_run else ''}Movies Symlink Plan")
     print("=" * 60)
@@ -478,21 +519,89 @@ def main(dry_run, clean):
     for entry in skipped:
         print(f"  {entry}")
 
+    # --- Ambiguous Part.N prompt ---
+    if ambiguous:
+        print(f"\n[AMBIGUOUS — PART FILES] {len(ambiguous)} entries need manual routing:\n")
+        if dry_run:
+            for entry, part_files in ambiguous:
+                title = clean_title(entry)
+                year  = extract_year(entry)
+                label = f"{title} ({year})" if year else title
+                print(f"  {label}")
+                for pf in part_files:
+                    print(f"    {pf}")
+            print("\n  (run without --dry-run to route these interactively)")
+        else:
+            for entry, part_files in ambiguous:
+                title = clean_title(entry)
+                year  = extract_year(entry)
+                label = f"{title} ({year})" if year else title
+
+                print(f"\n  {label}")
+                for pf in part_files:
+                    print(f"    {pf}")
+                print()
+                print("    [1] Movie      → movies-linked/  (picks largest file)")
+                print("    [2] TV/Miniseries → skip  (make_tv_links.py will handle)")
+                print("    [s] Skip for now")
+
+                while True:
+                    choice = input("    Choice: ").strip().lower()
+                    if choice in ("1", "2", "s"):
+                        break
+                    print("    Invalid choice — enter 1, 2, or s")
+
+                if choice == "1":
+                    # Process as movie: pick largest video file in folder
+                    folder_path = os.path.join(MOVIES_SOURCE, entry)
+                    videos = []
+                    with os.scandir(folder_path) as it:
+                        for f in it:
+                            if f.is_file() and is_video(f.name) and not is_sample(f.name):
+                                videos.append(f)
+                    if not videos:
+                        print(f"    [FAIL] No video files found in {entry}")
+                        continue
+                    primary     = max(videos, key=lambda f: f.stat().st_size)
+                    video_path  = primary.path
+                    movie_year  = year or extract_year(primary.name)
+                    movie_title = title or clean_title(primary.name)
+                    quality     = extract_quality(entry) or extract_quality(primary.name)
+                    if not movie_year:
+                        print(f"    [WARN] No year found for {label} — skipping, add manually")
+                        continue
+                    folder_name = f"{movie_title} ({movie_year})"
+                    ext         = os.path.splitext(video_path)[1]
+                    link_name   = f"{folder_name} - {quality}{ext}" if quality else f"{folder_name}{ext}"
+                    link_dir    = os.path.join(MOVIES_LINKED, folder_name)
+                    link_path   = os.path.join(link_dir, link_name)
+                    print(f"    [MOVIE] {folder_name}")
+                    if len(part_files) > 1:
+                        print(f"    [NOTE]  Only largest file linked — {len(part_files) - 1} part file(s) not linked")
+                    ensure_dir(link_dir, dry_run)
+                    make_symlink(link_path, video_path, dry_run)
+
+                elif choice == "2":
+                    print(f"    [TV] Skipped — run make_tv_links.py to route to tv-linked/")
+
+                else:
+                    print(f"    [SKIP] {label} — skipped for now")
+
     print("\n" + "=" * 60)
     if dry_run:
-        print("DRY RUN complete - no files or folders created.")
+        print("DRY RUN complete — no files or folders created.")
         print("Run without --dry-run to apply.")
     else:
         print(f"\nDone. Point Jellyfin/Radarr at: {MOVIES_LINKED}")
 
-    no_year_flagged = [f for f in flagged if f[1] == "no year found - needs manual match"]
+    no_year_flagged = [f for f in flagged if f[1] == "no year found — needs manual match"]
     if no_year_flagged:
         print(f"\n{len(no_year_flagged)} entries flagged (no year found).")
         if dry_run:
             print("  (run without --dry-run to use TMDB auto-lookup)")
         else:
             print("  [1] Auto-lookup via TMDB and create symlinks")
-            print("  [2] Skip - match manually later")
+            print("  [2] Skip — match manually later")
             choice = input("\nChoice: ").strip()
             if choice == "1":
                 resolve_flagged_via_tmdb(no_year_flagged, dry_run)
