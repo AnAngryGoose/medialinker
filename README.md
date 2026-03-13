@@ -6,9 +6,9 @@ Two Python scripts that build a clean, Jellyfin/arr-compatible symlink library f
 
 ## What this does
 
-If your media library is a mess and you want to set up Jellyfin, Radarr, or Sonarr without manually sorting thousands of files, this is what these scripts are for.
+Automatically organize a messy media library to set up Jellyfin, Radarr, or Sonarr without manually sorting thousands of files.
 
-They scan your existing `/movies/` and `/tv/` folders, figure out what's what, and build a clean symlink tree that Jellyfin and the arr stack can actually read. The original files stay exactly where they are. Your torrent client keeps seeding from the same paths. Nothing breaks.
+They scan your existing `/movies/` and `/tv/` folders, figure out what's what, seperate the files automatically, and build a clean symlink tree that Jellyfin and the arr stack can actually read. The original files stay exactly where they are. Your torrent client keeps seeding from the same paths. Nothing breaks.
 
 ```
 /movies/                              /tv/
