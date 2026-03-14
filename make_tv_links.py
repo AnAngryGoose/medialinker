@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """
-make_tv_links.py  [v2.1]
+make_tv_links.py  [v0.22] 
+
+ - bare episode vs. folder matching fixes. Fuzzy match improvments. 
+ - Bug fix - duplicate show folders from name mismatch between Pass 1 and Pass 2
+ - Bug fix - trailing year in filename producing split show folders
+ - New function: normalize_for_match()
 
 Builds a Jellyfin/Sonarr-ready symlink tree from disorganized TV and
 miniseries folders. Reads from /tv/ and /movies/, writes to /tv-linked/.
@@ -37,6 +42,8 @@ How it works:
   Pass 2 - bare episode files:
     - Scans /tv/ for video files sitting directly in the folder with no parent
     - Resolves show name via NAME_OVERRIDES -> TMDB TV search -> parsed fallback
+    - Matches resolved name against Pass 1 results using aggressive fuzzy matching
+    - Falls back to scanning existing tv-linked/ folders on disk if grouped match fails
     - Detects conflicts with existing season structures and prompts for resolution
     - Never overwrites or modifies any existing structure without user confirmation
     - Safe to re-run - already-linked episodes are silently skipped
@@ -84,7 +91,7 @@ MEDIA_ROOT_CONTAINER = "/data/media"               # same path inside Docker
 
 TV_SOURCE     = f"{MEDIA_ROOT_HOST}/tv"
 MOVIES_SOURCE = f"{MEDIA_ROOT_HOST}/movies"
-TV_LINKED     = f"{MEDIA_ROOT_HOST}/tv-linked"
+TV_LINKED     = f"{MEDIA_ROOT_HOST}/tv-linked-test"
 
 # Get a free API key at https://www.themoviedb.org/settings/api
 # Used for automatic show name resolution on bare episode files.
@@ -120,19 +127,37 @@ RE_STRIP = re.compile(
 # These take priority over TMDB lookups.
 # Format: "parsed name" -> "name you want"
 NAME_OVERRIDES = {
-    #"Scooby-Doo Where Are You":  "Scooby Doo Where Are You",
-    #"The Office US":             "The Office (US)",
-    #"Mystery Science Theater":   "Mystery Science Theater 3000",
+    "A Pup Named Scooby Doo":    "A Pup Named Scooby-Doo",
+    "A.Pup.Named Scooby-Doo":   "A Pup Named Scooby-Doo",
+    "Scooby Doo Where Are You!": "Scooby Doo Where Are You",
+    "Scooby-Doo Where Are You":  "Scooby Doo Where Are You",
+    "The Office":                "The Office (US)",
+    "The Office US":             "The Office (US)",
+    # "3000" is stripped as a number token — override to preserve full title
+    "Mystery Science Theater":   "Mystery Science Theater 3000",
 }
 
-# Map bare "Season N" folders (no show name) to the correct show.
+# ORPHAN_OVERRIDES: map bare "Season N" folders (no show name in the
+# folder itself) to their correct show. Run --dry-run first to identify
+# orphans — they appear in [TV PASS-THROUGH] without a parent show name.
+#
 # Format: "folder name on disk" -> ("Show Name", season_number)
 ORPHAN_OVERRIDES = {
-    #"Season 1": ("Little Bear", 1),
-    #"Season 2": ("Little Bear", 2),
-    #"Wild.Kratts.Season.4":  ("Wild Kratts", 4),
-    #"Planet.Earth.1080p.BluRay.x264-CULTHD": ("Planet Earth", 1),
+    # Little Bear — bare Season N folders with no show name in the folder itself
+    "Season 1": ("Little Bear", 1),
+    "Season 2": ("Little Bear", 2),
+    "Season 3": ("Little Bear", 3),
+    "Season 4": ("Little Bear", 4),
+    "Season 5": ("Little Bear", 5),
+    # Folders using "Season.N" naming instead of "S04" — files inside are
+    # standard S04E01 format so is_bare_episode_folder() won't catch them
+    "Wild.Kratts.Season.4":  ("Wild Kratts", 4),
+    "The Blue Planet Season 1": ("The Blue Planet", 1),
+    # Planet Earth — folder has no S01 and files use abbreviated "pe.s01e01" prefix
+    # so neither SEASON_RE nor is_bare_episode_folder() can detect it
+    "Planet.Earth.1080p.BluRay.x264-CULTHD": ("Planet Earth", 1),
 }
+
 
 
 # ---------------------------------------------------------------------------
@@ -164,9 +189,30 @@ def episode_info(filename):
 
 
 def normalize_show_key(name):
-    """Normalize a show name for grouping (case/apostrophe insensitive)."""
+    """Normalize a show name for grouping within Pass 1 (case/apostrophe insensitive).
+    Used only for grouping season folders under the same show name - not for
+    cross-source matching. See normalize_for_match() for that."""
     name = name.lower()
     name = re.sub(r"['\u2019`]", '', name)
+    name = re.sub(r'\s+', ' ', name)
+    return name.strip()
+
+
+def normalize_for_match(name):
+    """Aggressive normalization used only for matching names across different sources.
+
+    Strips articles, possessives, studio name prefixes, trailing years, and all
+    punctuation so that names like "Marvel's Spidey and His Amazing Friends" and
+    "Spidey and His Amazing Friends" resolve to the same key for comparison.
+
+    Never used for display or folder creation - comparison only.
+    """
+    name = name.lower()
+    name = re.sub(r"['\u2019`]s?\b", '', name)                    # apostrophes + possessives
+    name = re.sub(r'^(the|a|an)\s+', '', name)                     # leading articles
+    name = re.sub(r"^(marvels?|dcs?|disneys?|nbc|bbc)\s+", '', name)  # studio prefixes
+    name = re.sub(r'\s+\d{4}$', '', name)                          # trailing years
+    name = re.sub(r'[^a-z0-9\s]', '', name)                        # remaining punctuation
     name = re.sub(r'\s+', ' ', name)
     return name.strip()
 
@@ -275,6 +321,39 @@ def resolve_show_name(parsed_name):
     return parsed_name
 
 
+def find_matching_show(show_name, grouped):
+    """Find the canonical show name in the Pass 1 grouped dict that matches
+    show_name, using aggressive fuzzy matching via normalize_for_match().
+
+    Falls back to scanning existing folders in tv-linked/ on disk if the
+    grouped dict lookup fails. This catches cases where TMDB returned a
+    different form of the name than what folder parsing produced (e.g.
+    "Spidey..." vs "Marvel's Spidey..."), ensuring bare file episodes land
+    under the existing folder rather than creating a duplicate.
+
+    Returns the matched canonical name string, or None if no match found.
+    """
+    match_key = normalize_for_match(show_name)
+
+    # Stage 1: check grouped dict from Pass 1
+    for g in grouped:
+        if normalize_for_match(g) == match_key:
+            return g
+
+    # Stage 2: check what already exists on disk in tv-linked/
+    if os.path.isdir(TV_LINKED):
+        try:
+            with os.scandir(TV_LINKED) as it:
+                for existing in it:
+                    if (existing.is_dir() and
+                            normalize_for_match(existing.name) == match_key):
+                        return existing.name
+        except (PermissionError, FileNotFoundError):
+            pass
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Bare file helpers
 # ---------------------------------------------------------------------------
@@ -285,6 +364,8 @@ def parse_bare_episode(filename):
 
     Everything before the episode marker is treated as the show name.
     Dots are replaced with spaces when no spaces exist in the parsed title.
+    Trailing years are stripped from the show name to match how Pass 1
+    handles folder names (e.g. 'Fallout 2024' -> 'Fallout').
     """
     name = os.path.splitext(filename)[0]
 
@@ -295,6 +376,7 @@ def parse_bare_episode(filename):
         raw_title   = name[:m.start()].strip(' .-_')
         show_name   = (raw_title.replace('.', ' ').strip()
                        if ' ' not in raw_title else raw_title.strip())
+        show_name   = re.sub(r'\s+\d{4}$', '', show_name).strip()
         return show_name, season_num, episode_num, extract_quality(name)
 
     m = RE_XNOTATION.search(name)
@@ -305,6 +387,7 @@ def parse_bare_episode(filename):
         raw_title   = name[:m.start()].strip(' .-_')
         show_name   = (raw_title.replace('.', ' ').strip()
                        if ' ' not in raw_title else raw_title.strip())
+        show_name   = re.sub(r'\s+\d{4}$', '', show_name).strip()
         return show_name, season_num, episode_num, extract_quality(name)
 
     return None
@@ -496,8 +579,10 @@ def scan_tv_bare_files(grouped):
     A bare file is a video file sitting directly in /tv/ with no parent folder.
     For each bare file:
       - Parses show name, season, episode, and quality from the filename
+      - Strips trailing years from parsed show name (e.g. 'Fallout 2024' -> 'Fallout')
       - Resolves show name via NAME_OVERRIDES -> TMDB -> parsed fallback
-      - Checks whether season structure already exists in tv-linked/
+      - Matches against Pass 1 results using aggressive fuzzy matching, then
+        falls back to scanning existing tv-linked/ folders on disk
 
     Returns:
       bare_new       list of (show_name, season_num, episode_num, quality, filepath)
@@ -533,16 +618,20 @@ def scan_tv_bare_files(grouped):
 
         raw_show, season_num, episode_num, quality = result
         show_name = sanitize_filename(resolve_show_name(raw_show))
-        show_key  = normalize_show_key(show_name)
+
+        # Use fuzzy matching to find an existing show in grouped or on disk.
+        # This prevents duplicate show folders when TMDB and folder parsing
+        # produce slightly different canonical names for the same show.
+        matched_show = find_matching_show(show_name, grouped)
+
+        if matched_show and matched_show != show_name:
+            # Adopt the name already established by Pass 1 or on disk
+            show_name = matched_show
 
         season_label = f"Season {season_num:02d}"
         season_path  = os.path.join(TV_LINKED, show_name, season_label)
 
-        # Find matching show in Pass 1 grouped results by normalized key
-        canonical_show = next(
-            (g for g in grouped if normalize_show_key(g) == show_key),
-            None
-        )
+        canonical_show = matched_show if matched_show in grouped else None
 
         if canonical_show is None:
             # Show has no folder-based seasons from Pass 1

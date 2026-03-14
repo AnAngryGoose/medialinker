@@ -244,8 +244,40 @@ ORPHAN_OVERRIDES = {
 Python 3.6+ - stdlib only, no external dependencies.
 
 ## Changelog
+---
 
-**v2.1**
+## v0.22 
+
+### Bug fix - duplicate show folders from name mismatch between Pass 1 and Pass 2
+
+**The problem:** When a bare episode file arrives for a show that already has season folders linked, the two passes could produce different canonical names for the same show. Pass 1 parses folder names directly. Pass 2 goes through TMDB. TMDB doesn't always return the same string that folder parsing produces. "Marvel's Spidey and His Amazing Friends" from a folder became "Spidey and His Amazing Friends" from TMDB, and the normalized key comparison failed to match them, creating a second show folder on disk.
+
+**The fix:** New `normalize_for_match()` function used exclusively for cross-source comparison. It strips leading articles (the, a, an), studio prefixes (Marvel's, DC's, Disney's, BBC, NBC), possessives, trailing years, and all remaining punctuation before comparing. This is intentionally more aggressive than `normalize_show_key()`, which is still used for grouping Pass 1 folders where light normalization is correct.
+
+New `find_matching_show()` function replaces the inline key lookup in `scan_tv_bare_files()`. It runs two stages: first checks the Pass 1 grouped dict using fuzzy matching, then falls back to scanning existing folders in `tv-linked/` on disk. The disk fallback catches cases where a show was created in a previous run and isn't in the current run's grouped dict.
+
+When a fuzzy match succeeds, the bare file adopts the already-established name rather than creating a new one.
+
+---
+
+### Bug fix - trailing year in filename producing split show folders
+
+**The problem:** Files named `Fallout.2024.S01E01.mkv` produced raw show name `"Fallout 2024"` from `parse_bare_episode()`. Pass 1 already stripped trailing years via `extract_show_and_season()`. Pass 2 did not, so the normalized keys never matched and a second `Fallout 2024` folder appeared alongside the existing `Fallout` folder.
+
+**The fix:** `parse_bare_episode()` now strips trailing four-digit years from the parsed show name before returning, matching the same logic Pass 1 already applies to folder names.
+
+---
+
+### New function: `normalize_for_match()`
+
+Separate normalization path for cross-source name comparison only. Never used for display names or folder creation. The distinction between this and `normalize_show_key()` is intentional and documented in both functions.
+
+### New function: `find_matching_show()`
+
+Two-stage show name lookup: grouped dict first, disk scan second. Centralizes the matching logic that was previously inline in `scan_tv_bare_files()` and makes it testable in isolation.
+
+
+**v.21**
 
 ### New — bare episode file handling (TV script)
 
@@ -296,7 +328,7 @@ The TV script now handles video files sitting directly in `/tv/` with no parent 
 
 
 
-**v2.0:**
+**v.20:**
 - Extracted shared code into `common.py` - both scripts now import from the same place instead of duplicating logic
 - Removed dead code (`is_episode()` was defined but unused in the TV script)
 - Extracted interactive Part.N routing out of `main()` into its own function
@@ -305,7 +337,7 @@ The TV script now handles video files sitting directly in `/tv/` with no parent 
 - Video-finding logic consolidated into shared helpers instead of being repeated in multiple places
 - General cleanup: comments, docstrings, formatting
 
-**v1.2:**
+**v.12:**
 - Added Part.N detection and ambiguous folder handling to movies script
 - Added Part.N as last-resort episode pattern in TV script
 - Interactive prompt for routing ambiguous Part.N folders as movie or TV
