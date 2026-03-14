@@ -245,6 +245,57 @@ Python 3.6+ - stdlib only, no external dependencies.
 
 ## Changelog
 
+**v2.1**
+
+### New — bare episode file handling (TV script)
+
+The TV script now handles video files sitting directly in `/tv/` with no parent folder. Previously these were silently ignored.
+
+**Name resolution**
+
+-   Show names are resolved automatically via TMDB TV search before falling back to the parsed filename title
+-   `NAME_OVERRIDES` take priority over TMDB — existing overrides are unaffected
+-   TMDB results are cached per run so each unique show name only hits the API once
+
+**New output section: `[BARE FILES - NEW]`** Episodes with no existing season structure are linked automatically with no prompts. Show and season directories are created as real directories (not symlinks) with individual episode symlinks inside.
+
+**New output section: `[BARE FILES - CONFLICTS]`** Episodes that collide with existing season structure are flagged interactively:
+
+-   Episode already covered at same quality: silently skipped
+-   Episode exists in folder at different quality: prompts to convert season symlink to real dir and add quality variant
+-   Episode missing from existing season folder: prompts to convert and add
+-   Season real dir exists from previous run, episode not yet linked: prompts to add
+
+**New output section: `[BARE FILES - UNMATCHED]`** Files that couldn't be parsed into show/season/episode are listed at the end for manual handling.
+
+**Idempotent** Re-running after bare files have been linked skips already-linked episodes silently. Safe to run repeatedly.
+
+* * *
+
+### Bug fix — duplicate regex definitions (TV script)
+
+`RE_XNOTATION`, `RE_EPISODE`, and `RE_NOF` were defined locally in the TV script despite already existing in `common.py`. The local definitions are removed and the TV script now imports them from common along with the rest of the shared patterns. Behavior is identical but the two scripts are now properly in sync — a pattern change in `common.py` will apply to both scripts.
+
+* * *
+
+### common.py — extract\_quality() added
+
+`extract_quality()` and its `RE_QUALITY` pattern moved into `common.py` and are now shared across both scripts. The TV script imports it from common. The movies script still has a local copy pending cleanup.
+
+* * *
+
+### New imports (TV script)
+
+`json`, `urllib.request`, `urllib.parse` added to support TMDB TV lookup.
+
+* * *
+
+### Known pending
+
+-   `make_movies_links.py` local `extract_quality()` not yet removed — carry forward to next update
+
+
+
 **v2.0:**
 - Extracted shared code into `common.py` - both scripts now import from the same place instead of duplicating logic
 - Removed dead code (`is_episode()` was defined but unused in the TV script)
