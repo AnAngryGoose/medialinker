@@ -21,10 +21,10 @@ VIDEO_EXTS = {".mkv", ".mp4", ".avi", ".ts", ".m4v"}
 # ---------------------------------------------------------------------------
 
 # Episode detection patterns
-RE_SXXEXX      = re.compile(r'[Ss](\d{1,2})[Ee](\d{2})', re.IGNORECASE)
-RE_XNOTATION   = re.compile(r'\d{1,2}x\d{2}', re.IGNORECASE)
-RE_EPISODE     = re.compile(r'[Ee]pisode[. _](\d{1,3})', re.IGNORECASE)
-RE_NOF         = re.compile(r'[\(]?(\d{1,2})of(\d{1,2})[\)]?', re.IGNORECASE)
+RE_SXXEXX       = re.compile(r'[Ss](\d{1,2})[Ee](\d{2})', re.IGNORECASE)
+RE_XNOTATION    = re.compile(r'\d{1,2}x\d{2}', re.IGNORECASE)
+RE_EPISODE      = re.compile(r'[Ee]pisode[. _](\d{1,3})', re.IGNORECASE)
+RE_NOF          = re.compile(r'[\(]?(\d{1,2})of(\d{1,2})[\)]?', re.IGNORECASE)
 RE_BARE_EPISODE = re.compile(r'(?<![Ss\d])E(\d{2,3})\b')
 
 # Sample file detection - word-boundary match avoids false positives like "example.mkv"
@@ -36,6 +36,12 @@ RE_ILLEGAL_CHARS = re.compile(r'[/:\\?*"<>|]')
 # Part.N detection - matches ".Part.1", ".Part1", " Part 2" etc.
 # \d{1,2} intentionally excludes 4-digit years (e.g. "Bande a part 1964").
 RE_PART = re.compile(r'[.\s\-_](?:Part|Pt)[.\s\-_]?(\d{1,2})\b', re.IGNORECASE)
+
+# Quality tag extraction - used by both scripts for multi-version naming
+RE_QUALITY = re.compile(
+    r'(2160p|1080p|720p|576p|480p|REMUX|BluRay|BDRip|WEB-DL|WEBRip|HDTV|UHD)',
+    re.IGNORECASE
+)
 
 
 # ---------------------------------------------------------------------------
@@ -59,6 +65,13 @@ def is_episode(filename):
             RE_EPISODE.search(filename) or
             RE_NOF.search(filename) or
             RE_BARE_EPISODE.search(filename))
+
+
+def extract_quality(name):
+    """Extract a short quality label from a name (e.g. '1080P', '720P').
+    Returns uppercased label or None if not found."""
+    m = RE_QUALITY.search(name)
+    return m.group(1).upper() if m else None
 
 
 def sanitize_filename(name):
@@ -90,7 +103,8 @@ def ensure_dir(path, dry_run):
 
 
 def clean_broken_symlinks(directory):
-    """Remove broken file and directory symlinks, then prune empty directories."""
+    """Remove broken file and directory symlinks, then prune empty directories.
+    Only operates on the directory passed in - never touches source paths."""
     removed = 0
 
     # Broken file symlinks

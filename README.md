@@ -76,6 +76,11 @@ TMDB auto-lookup is available for entries where a year can't be extracted from t
 
 You will also get a prompt for other, ambiguous, potentially wrong matches to make sure it goes to correct place. 
 
+### Nothing is ever changed without you confirming it
+
+Any situation where existing structure would be modified requires you to type a confirmation first. The script will never silently overwrite, replace, or restructure anything that already exists in your linked library. If you skip a prompt, the file is left alone and noted in the output.
+
+
 ### Other features
 
 - **Multi-version grouping** - multiple copies of the same movie (1080p, 4K, Remux) coexist in one folder with quality suffixes. Same-resolution duplicates get `.2`, `.3` to avoid collisions.
@@ -121,7 +126,19 @@ tv-linked/
 
 ### `common.py`
 
+**Bare (non nested) episode handling**
+
 Shared utilities used by both scripts. Contains regex patterns, filesystem helpers, and symlink logic. Keeps everything in one place so the two scripts stay in sync.
+**Brand new show, no existing structure** File arrives for a show that doesn't exist in your linked library at all. The script creates the show folder and season folder, links the episode in, no questions asked. If you run it again later, it recognises the episode is already linked and skips it silently.
+
+**Episode already exists in the season folder** You have a complete season folder symlinked for a show, and a bare file arrives for an episode that's already in that folder at the same quality. The script sees it's already covered and skips it silently. Nothing to do.
+
+**Same episode, different quality** You have a 1080p season folder linked, and a 720p version of one episode lands as a bare file. The script flags this and asks you what to do. If you confirm, it converts the season folder symlink into a real directory, re-links all the existing episodes individually inside it, then adds the new quality version alongside them. Both versions end up in the same Season folder and Jellyfin will show both.
+
+**Episode missing from the season folder entirely** The season folder is linked but this particular episode isn't in it — maybe it was a gap in a release, or you grabbed it from somewhere else. Same prompt as above. You confirm, the season gets converted to a real directory, and the missing episode gets added.
+
+* * *
+
 
 ---
 
