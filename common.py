@@ -1,5 +1,5 @@
 """
-common.py [v0.24]
+common.py [v0.25]
 
 Shared utilities for medialn scripts (make_movies_links.py, make_tv_links.py).
 
@@ -27,6 +27,9 @@ RE_XNOTATION    = re.compile(r'\d{1,2}x\d{2}', re.IGNORECASE)
 RE_EPISODE      = re.compile(r'[Ee]pisode[. _](\d{1,3})', re.IGNORECASE)
 RE_NOF          = re.compile(r'[\(]?(\d{1,2})of(\d{1,2})[\)]?', re.IGNORECASE)
 RE_BARE_EPISODE = re.compile(r'(?<![Ss\d])E(\d{2,3})\b')
+
+# Multi-episode continuation after an SxxExx match (e.g. S01E05-E06, S01E05E06)
+RE_MULTI_EP = re.compile(r'[-.]?[Ee](\d{2})', re.IGNORECASE)
 
 # Sample file detection - word-boundary match avoids false positives like "example.mkv"
 RE_SAMPLE = re.compile(r'\bsample\b', re.IGNORECASE)
@@ -333,7 +336,25 @@ def is_sample(filename):
 
 
 def is_episode(filename):
-    """Check if filename matches any known episode naming pattern."""
+    """Check if filename matches any known episode naming pattern.
+    Includes Part.N as a last-resort match. Used for general episode
+    detection in both scripts."""
+    return (RE_SXXEXX.search(filename) or
+            RE_XNOTATION.search(filename) or
+            RE_EPISODE.search(filename) or
+            RE_NOF.search(filename) or
+            RE_BARE_EPISODE.search(filename) or
+            RE_PART.search(filename))
+
+
+def is_episode_strict(filename):
+    """Check if filename matches a real episode pattern, excluding Part.N.
+
+    Used by scan_movies_for_miniseries() to avoid false-positiving on
+    multi-part films like Kill Bill. Part.N files could be either episodes
+    or movie parts, so they get routed to the movies script's ambiguity
+    prompt instead of being auto-detected as miniseries.
+    """
     return (RE_SXXEXX.search(filename) or
             RE_XNOTATION.search(filename) or
             RE_EPISODE.search(filename) or
@@ -351,6 +372,27 @@ def extract_quality(name):
 def sanitize_filename(name):
     """Replace characters illegal on Windows/network mounts with '-'."""
     return RE_ILLEGAL_CHARS.sub('-', name)
+
+
+def clean_passthrough_name(folder_name):
+    """Safe cosmetic cleanup for pass-through folder names.
+
+    Only does non-destructive transformations:
+      - Replaces dots with spaces (when no spaces exist in the name)
+      - Normalizes whitespace
+      - Strips leading/trailing junk characters
+
+    Does NOT strip years, remove bracketed metadata, change season
+    notation, or do any canonical renaming. Those belong in the
+    parser/normalization layer, not in generic pass-through cleanup.
+    """
+    name = folder_name
+    # Only dot-to-space if the name has no spaces at all (scene naming)
+    if ' ' not in name:
+        name = name.replace('.', ' ')
+    # Normalize whitespace
+    name = re.sub(r'\s+', ' ', name).strip()
+    return name
 
 
 def host_to_container(path, host_root, container_root):

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-make_tv_links.py  [v0.24]
+make_tv_links.py  [v0.25]
 
 Builds a Jellyfin/Sonarr-ready symlink tree from disorganized TV and
 miniseries folders. Reads from /tv/ and /movies/, writes to /tv-linked/.
@@ -12,7 +12,8 @@ Output:
       Season 01/  -> /tv/Show.Name.S01.720p.../        (folder symlink)
       Season 02/  -> /tv/Show.Name.S02.1080p.../       (folder symlink)
       Season 03/                                        (real dir, bare-file season)
-        Show Name.S03E01.1080P.mkv  -> /tv/Show.Name.S03E01...mkv
+        Show Name.S03E01 - 1080P.mkv  -> /tv/Show.Name.S03E01...mkv
+        Show Name.S03E05-E06 - 1080P.mkv  -> /tv/...S03E05-E06...mkv
     Already Structured Show (Year) {tvdb-xxxxx}/  -> symlinked as-is
     Miniseries Title/
       Season 01/
@@ -23,20 +24,25 @@ Sources:
               symlinked under Show Name/Season XX/.
             - Folders already in correct Jellyfin structure are symlinked as-is.
             - Bare episode files (no parent folder) handled in Pass 2.
-  /movies/  - Folders with 2+ episode files are treated as miniseries and
-              symlinked into tv-linked/.
+  /movies/  - Folders with 2+ episode files (real episode markers, not Part.N)
+              are treated as miniseries and symlinked into tv-linked/.
+              Part.N folders are left to the movies script's ambiguity prompt.
 
 How it works:
   Pass 1:
     - Groups season folders by show name (case/apostrophe insensitive)
-    - Passes through already-structured folders untouched
-    - Pulls miniseries out of /movies/ automatically
-    - Detects episode formats: S01E01, 1x01, Episode.N, NofN, bare E01, Part.N
+    - Passes through already-structured folders untouched (with safe name cleanup)
+    - Pulls miniseries out of /movies/ automatically (Part.N excluded)
+    - Detects episode formats: S01E01, 1x01, Episode.N, NofN, bare E01
     - Warns about duplicate seasons and name overlaps
+    - Prompts to choose quality when duplicate seasons exist at different qualities
 
   Pass 2 - bare episode files:
     - Scans /tv/ for video files sitting directly in the folder with no parent
     - Resolves show name via NAME_OVERRIDES -> TMDB TV search -> parsed fallback
+    - TMDB results are validated with word-overlap confidence check
+    - Handles multi-episode files (S01E05-E06) with combined naming
+    - Handles Episode.N format in addition to SxxExx and NxNN
     - Matches resolved name against Pass 1 results using aggressive fuzzy matching
     - Falls back to scanning existing tv-linked/ folders on disk if grouped match fails
     - Detects conflicts with existing season structures and prompts for resolution
@@ -73,10 +79,10 @@ import urllib.request
 import urllib.parse
 
 from common import (
-    RE_SXXEXX, RE_BARE_EPISODE, RE_SAMPLE, RE_PART,
+    RE_SXXEXX, RE_BARE_EPISODE, RE_SAMPLE, RE_PART, RE_MULTI_EP,
     RE_XNOTATION, RE_EPISODE, RE_NOF,
-    is_video, is_sample, sanitize_filename, extract_quality,
-    make_symlink, ensure_dir, clean_broken_symlinks,
+    is_video, is_sample, is_episode_strict, sanitize_filename, extract_quality,
+    make_symlink, ensure_dir, clean_broken_symlinks, clean_passthrough_name,
     init_path_guard, safe_remove, safe_makedirs, safe_symlink,
     validate_output_dir,
 )
@@ -125,11 +131,11 @@ RE_STRIP = re.compile(
 # These take priority over TMDB lookups.
 # Format: "parsed name" -> "name you want"
 NAME_OVERRIDES = {
-    # "A Pup Named Scooby Doo":    "A Pup Named Scooby-Doo",
-    # "A.Pup.Named Scooby-Doo":   "A Pup Named Scooby-Doo",
-    # "The Office US":             "The Office (US)",
-    # # "3000" is stripped as a number token -- override to preserve full title
-    # "Mystery Science Theater":   "Mystery Science Theater 3000",
+    #"A Pup Named Scooby Doo":    "A Pup Named Scooby-Doo",
+    #"A.Pup.Named Scooby-Doo":   "A Pup Named Scooby-Doo",
+    #"The Office US":             "The Office (US)",
+    # "3000" is stripped as a number token -- override to preserve full title
+    #"Mystery Science Theater":   "Mystery Science Theater 3000",
 }
 
 # ORPHAN_OVERRIDES: map bare "Season N" folders (no show name in the
@@ -139,19 +145,15 @@ NAME_OVERRIDES = {
 # Format: "folder name on disk" -> ("Show Name", season_number)
 ORPHAN_OVERRIDES = {
     # Little Bear -- bare Season N folders with no show name in the folder itself
-    # "Season 1": ("Little Bear", 1),
-    # "Season 2": ("Little Bear", 2),
-    # "Season 3": ("Little Bear", 3),
-    # "Season 4": ("Little Bear", 4),
-    # "Season 5": ("Little Bear", 5),
-}
+    #"Season 1": ("Little Bear", 1),
+    #"Season 2": ("Little Bear", 2),
     # Folders using "Season.N" naming instead of "S04" -- files inside are
     # standard S04E01 format so is_bare_episode_folder() won't catch them
-    #Wild.Kratts.Season.4":  ("Wild Kratts", 4),
-    # "The Blue Planet Season 1": ("The Blue Planet", 1),
-    # # Planet Earth -- folder has no S01 and files use abbreviated "pe.s01e01" prefix
-    # # so neither SEASON_RE nor is_bare_episode_folder() can detect it
-    # "Planet.Earth.1080p.BluRay.x264-CULTHD": ("Planet Earth", 1),
+    #"Wild.Kratts.Season.4":  ("Wild Kratts", 4),
+    #"The Blue Planet Season 1": ("The Blue Planet", 1),
+    # Planet Earth -- folder has no S01 and files use abbreviated "pe.s01e01" prefix
+    # so neither SEASON_RE nor is_bare_episode_folder() can detect it
+    #"Planet.Earth.1080p.BluRay.x264-CULTHD": ("Planet Earth", 1),
 }
 
 
@@ -160,7 +162,8 @@ ORPHAN_OVERRIDES = {
 # ---------------------------------------------------------------------------
 
 def episode_info(filename):
-    """Extract (season, episode) from a filename. Returns None if no match."""
+    """Extract (season, episode) from a filename. Returns None if no match.
+    Includes Part.N as a last-resort pattern for general episode detection."""
     m = RE_SXXEXX.search(filename)
     if m:
         return int(m.group(1)), int(m.group(2))
@@ -178,6 +181,29 @@ def episode_info(filename):
     if m:
         return 1, int(m.group(1))
     m = RE_PART.search(filename)
+    if m:
+        return 1, int(m.group(1))
+    return None
+
+
+def episode_info_strict(filename):
+    """Extract (season, episode) from a filename, excluding Part.N matches.
+    Used by scan_movies_for_miniseries to avoid false-positiving on
+    multi-part films like Kill Bill."""
+    m = RE_SXXEXX.search(filename)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    m = RE_XNOTATION.search(filename)
+    if m:
+        parts = re.split(r'x', m.group(0), flags=re.IGNORECASE)
+        return int(parts[0]), int(parts[1])
+    m = RE_EPISODE.search(filename)
+    if m:
+        return 1, int(m.group(1))
+    m = RE_BARE_EPISODE.search(filename)
+    if m:
+        return 1, int(m.group(1))
+    m = RE_NOF.search(filename)
     if m:
         return 1, int(m.group(1))
     return None
@@ -263,6 +289,21 @@ def _prompt(message, valid):
         print(f"    Invalid - enter one of: {', '.join(valid)}")
 
 
+def build_episode_link_name(show_name, season_num, episode_num, quality, ext,
+                            second_ep=None):
+    """Build a standardized episode symlink filename.
+
+    Single episode:  Show Name.S01E05 - 1080P.mkv
+    Multi-episode:   Show Name.S01E05-E06 - 1080P.mkv
+    No quality:      Show Name.S01E05.mkv
+    """
+    ep_str = f"S{season_num:02d}E{episode_num:02d}"
+    if second_ep is not None:
+        ep_str += f"-E{second_ep:02d}"
+    q_suffix = f" - {quality.upper()}" if quality else ""
+    return f"{show_name}.{ep_str}{q_suffix}{ext}"
+
+
 # ---------------------------------------------------------------------------
 # TMDB TV lookup
 # ---------------------------------------------------------------------------
@@ -272,9 +313,50 @@ def _prompt(message, valid):
 _tmdb_tv_cache = {}
 
 
+def _tmdb_word_overlap(parsed_name, tmdb_name):
+    """Check whether the TMDB result is a reasonable match for the parsed name.
+
+    Compares the word sets of both names. Rejects results where the parsed
+    words don't appear in the TMDB result, or where the TMDB result is a
+    much longer title that happens to contain the parsed words.
+
+    For short names (1-2 words), requires all parsed words present AND the
+    TMDB result must not have more than parsed_count + 1 words. This catches
+    "Retro Show" -> "Super Maximum Retro Show" where all parsed words match
+    but the TMDB title is clearly a different, longer show name.
+
+    For longer names (3+ words), requires at least half the parsed words
+    to appear in the TMDB result.
+    """
+    parsed_words = set(parsed_name.lower().split())
+    tmdb_words   = set(tmdb_name.lower().split())
+
+    if not parsed_words:
+        return False
+
+    overlap = parsed_words & tmdb_words
+
+    # Short names: all parsed words must be present, and the TMDB result
+    # can't be much longer (max 1 extra word, to allow for articles like
+    # "The Office" matching "The Office US")
+    if len(parsed_words) <= 2:
+        if len(overlap) < len(parsed_words):
+            return False
+        if len(tmdb_words) > len(parsed_words) + 1:
+            return False
+        return True
+
+    # Longer names: require at least half the parsed words
+    return len(overlap) >= len(parsed_words) / 2
+
+
 def tmdb_search_tv(parsed_name):
     """Search TMDB for a TV show by name. Returns canonical title string or None.
+
     Results are cached per parsed name so each unique name only hits the API once.
+    TMDB results are validated with a word-overlap confidence check. If the
+    result doesn't look like a reasonable match for the parsed name, it is
+    rejected and None is returned (falling back to the parsed name).
     """
     if parsed_name in _tmdb_tv_cache:
         return _tmdb_tv_cache[parsed_name]
@@ -293,6 +375,14 @@ def tmdb_search_tv(parsed_name):
             _tmdb_tv_cache[parsed_name] = None
             return None
         canonical = sanitize_filename(results[0].get("name", parsed_name))
+
+        # Confidence check: reject TMDB results that don't share enough
+        # words with the parsed name to avoid false matches on short/generic titles
+        if not _tmdb_word_overlap(parsed_name, canonical):
+            print(f"    [TMDB] Rejected: '{parsed_name}' -> '{canonical}' (low confidence)")
+            _tmdb_tv_cache[parsed_name] = None
+            return None
+
         _tmdb_tv_cache[parsed_name] = canonical
         return canonical
     except Exception:
@@ -305,7 +395,7 @@ def resolve_show_name(parsed_name):
 
     Resolution order:
       1. NAME_OVERRIDES  - user-defined corrections, always win over TMDB
-      2. TMDB TV search  - automatic canonical title from TMDB
+      2. TMDB TV search  - automatic canonical title from TMDB (with confidence check)
       3. Parsed fallback - cleaned filename title used as-is
     """
     if parsed_name in NAME_OVERRIDES:
@@ -354,16 +444,22 @@ def find_matching_show(show_name, grouped):
 # ---------------------------------------------------------------------------
 
 def parse_bare_episode(filename):
-    """Parse a bare episode filename into (show_name, season_num, episode_num, quality).
-    Returns None if no recognizable SxxExx or NxNN pattern is found.
+    """Parse a bare episode filename into components.
 
-    Everything before the episode marker is treated as the show name.
-    Dots are replaced with spaces when no spaces exist in the parsed title.
-    Trailing years are stripped from the show name to match how Pass 1
-    handles folder names (e.g. 'Fallout 2024' -> 'Fallout').
+    Returns a 5-tuple: (show_name, season_num, episode_num, quality, second_ep)
+    Returns None if no recognizable pattern is found.
+
+    second_ep is an integer for multi-episode files (e.g. S01E05-E06 returns
+    second_ep=6) or None for single-episode files.
+
+    Supported patterns:
+      - SxxExx (and multi-ep: SxxExx-Exx, SxxExxExx)
+      - NxNN
+      - Episode.N / Episode N
     """
     name = os.path.splitext(filename)[0]
 
+    # SxxExx (with optional multi-episode continuation)
     m = RE_SXXEXX.search(name)
     if m:
         season_num  = int(m.group(1))
@@ -372,8 +468,18 @@ def parse_bare_episode(filename):
         show_name   = (raw_title.replace('.', ' ').strip()
                        if ' ' not in raw_title else raw_title.strip())
         show_name   = re.sub(r'\s+\d{4}$', '', show_name).strip()
-        return show_name, season_num, episode_num, extract_quality(name)
 
+        # Check for multi-episode continuation immediately after the match
+        # Handles: S01E05-E06, S01E05.E06, S01E05E06
+        second_ep   = None
+        remainder   = name[m.end():]
+        mc = RE_MULTI_EP.match(remainder)
+        if mc:
+            second_ep = int(mc.group(1))
+
+        return show_name, season_num, episode_num, extract_quality(name), second_ep
+
+    # NxNN format
     m = RE_XNOTATION.search(name)
     if m:
         parts       = re.split(r'x', m.group(0), flags=re.IGNORECASE)
@@ -383,7 +489,17 @@ def parse_bare_episode(filename):
         show_name   = (raw_title.replace('.', ' ').strip()
                        if ' ' not in raw_title else raw_title.strip())
         show_name   = re.sub(r'\s+\d{4}$', '', show_name).strip()
-        return show_name, season_num, episode_num, extract_quality(name)
+        return show_name, season_num, episode_num, extract_quality(name), None
+
+    # Episode.N format (defaults to Season 1)
+    m = RE_EPISODE.search(name)
+    if m:
+        episode_num = int(m.group(1))
+        raw_title   = name[:m.start()].strip(' .-_')
+        show_name   = (raw_title.replace('.', ' ').strip()
+                       if ' ' not in raw_title else raw_title.strip())
+        show_name   = re.sub(r'\s+\d{4}$', '', show_name).strip()
+        return show_name, 1, episode_num, extract_quality(name), None
 
     return None
 
@@ -436,6 +552,10 @@ def convert_season_symlink_to_real_dir(show_name, season_num, season_symlink_pat
     Only the tv-linked/ structure is modified. The source folder and its contents
     are never opened for writing or otherwise touched.
 
+    Quality is inherited from the source folder name when individual filenames
+    don't contain their own quality tag. This keeps naming consistent between
+    episodes that came from the folder and bare files added later.
+
     All filesystem writes use guarded functions from common.py (safe_remove,
     safe_makedirs, safe_symlink). Even if a bug in path construction somehow
     produced a source path here, the PathGuard would catch it and abort.
@@ -452,6 +572,10 @@ def convert_season_symlink_to_real_dir(show_name, season_num, season_symlink_pat
     if not os.path.isdir(source_folder_path):
         print(f"    [ERROR] Symlink target does not exist on disk: {source_folder_path}")
         return False
+
+    # Extract quality from the source folder name as a fallback for files
+    # that don't have their own quality tag in the filename
+    folder_quality = extract_quality(os.path.basename(source_folder_path))
 
     try:
         with os.scandir(source_folder_path) as it:
@@ -479,9 +603,12 @@ def convert_season_symlink_to_real_dir(show_name, season_num, season_symlink_pat
     for f in source_files:
         ep = parse_bare_episode(f.name)
         if ep:
-            _, s, e, q = ep
-            q_suffix  = f" - {q.upper()}" if q else ""
-            link_name = f"{show_name}.S{s:02d}E{e:02d}{q_suffix}{os.path.splitext(f.name)[1]}"
+            _, s, e, q, second_ep = ep
+            # Use file quality if available, otherwise inherit from folder
+            q = q or folder_quality
+            link_name = build_episode_link_name(
+                show_name, s, e, q, os.path.splitext(f.name)[1], second_ep
+            )
         else:
             link_name = f.name
 
@@ -544,7 +671,15 @@ def scan_tv_source():
 
 
 def scan_movies_for_miniseries():
-    """Scan /movies/ for folders with 2+ episode files. Returns show_name -> (folder, episodes)."""
+    """Scan /movies/ for folders with 2+ episode files.
+
+    Uses episode_info_strict() which excludes Part.N matches. This prevents
+    multi-part films (like Kill Bill with Part.1 and Part.2) from being
+    falsely detected as miniseries. Those folders are left for the movies
+    script's ambiguity prompt to handle.
+
+    Returns show_name -> (folder, episodes).
+    """
     results = {}
 
     with os.scandir(MOVIES_SOURCE) as it:
@@ -561,7 +696,8 @@ def scan_movies_for_miniseries():
         for f in files:
             if not f.is_file() or not is_video(f.name) or is_sample(f.name):
                 continue
-            info = episode_info(f.name)
+            # Use strict matching: excludes Part.N to avoid false positives
+            info = episode_info_strict(f.name)
             if info:
                 episodes.append((info[0], info[1], f.name))
 
@@ -573,6 +709,55 @@ def scan_movies_for_miniseries():
 
 
 # ---------------------------------------------------------------------------
+# Duplicate season resolution
+# ---------------------------------------------------------------------------
+
+def resolve_duplicate_seasons(show_name, seasons_sorted, dry_run):
+    """Detect and resolve duplicate seasons (same season number, different sources).
+
+    When a show has two folders for the same season (typically at different
+    qualities), prompts the user to choose which one to link. In dry-run
+    mode, reports the duplicates and picks the first alphabetically.
+
+    Returns a new seasons list with duplicates resolved to single entries.
+    """
+    # Group by season number
+    by_season = {}
+    for season_num, folder in seasons_sorted:
+        by_season.setdefault(season_num, []).append(folder)
+
+    resolved = []
+    for season_num in sorted(by_season.keys()):
+        folders = by_season[season_num]
+        if len(folders) == 1:
+            resolved.append((season_num, folders[0]))
+            continue
+
+        # Duplicate season detected
+        print(f"\n    [DUPLICATE] {show_name} Season {season_num:02d} "
+              f"has {len(folders)} sources:")
+        for i, folder in enumerate(folders, 1):
+            quality = extract_quality(folder) or "unknown quality"
+            print(f"      [{i}] {folder}  ({quality})")
+
+        if dry_run:
+            print(f"      (dry-run: using first option)")
+            resolved.append((season_num, folders[0]))
+            continue
+
+        while True:
+            choice = input(f"      Choose [1-{len(folders)}]: ").strip()
+            if choice.isdigit() and 1 <= int(choice) <= len(folders):
+                picked = folders[int(choice) - 1]
+                resolved.append((season_num, picked))
+                print(f"      Selected: {picked}")
+                break
+            print(f"      Invalid - enter a number between 1 and {len(folders)}")
+
+    return resolved
+
+
+# ---------------------------------------------------------------------------
 # Pass 2 - bare episode file scanner
 # ---------------------------------------------------------------------------
 
@@ -581,18 +766,18 @@ def scan_tv_bare_files(grouped):
 
     A bare file is a video file sitting directly in /tv/ with no parent folder.
     For each bare file:
-      - Parses show name, season, episode, and quality from the filename
+      - Parses show name, season, episode, quality, and multi-ep from the filename
       - Strips trailing years from parsed show name (e.g. 'Fallout 2024' -> 'Fallout')
-      - Resolves show name via NAME_OVERRIDES -> TMDB -> parsed fallback
+      - Resolves show name via NAME_OVERRIDES -> TMDB (with confidence check) -> parsed fallback
       - Matches against Pass 1 results using aggressive fuzzy matching, then
         falls back to scanning existing tv-linked/ folders on disk
 
     Returns:
-      bare_new       list of (show_name, season_num, episode_num, quality, filepath)
+      bare_new       list of (show_name, season_num, episode_num, quality, filepath, second_ep)
                      New episodes with no existing season structure at all.
 
       bare_conflicts list of (show_name, season_num, episode_num, quality, filepath,
-                              conflict_type, info)
+                              conflict_type, info, second_ep)
                      Episodes where season structure already exists.
                      conflict_type values:
                        'quality_variant'   episode exists in folder at different quality
@@ -619,7 +804,7 @@ def scan_tv_bare_files(grouped):
             bare_unmatched.append(entry.name)
             continue
 
-        raw_show, season_num, episode_num, quality = result
+        raw_show, season_num, episode_num, quality, second_ep = result
         show_name = sanitize_filename(resolve_show_name(raw_show))
 
         # Use fuzzy matching to find an existing show in grouped or on disk.
@@ -644,11 +829,12 @@ def scan_tv_bare_files(grouped):
                     continue  # Already linked - skip silently
                 bare_conflicts.append((
                     show_name, season_num, episode_num, quality,
-                    entry.path, 'bare_dir_episode', season_path
+                    entry.path, 'bare_dir_episode', season_path, second_ep
                 ))
             else:
                 # Completely new - no structure exists yet
-                bare_new.append((show_name, season_num, episode_num, quality, entry.path))
+                bare_new.append((show_name, season_num, episode_num, quality,
+                                 entry.path, second_ep))
 
         else:
             # Show exists in grouped - find whether this specific season is there
@@ -660,7 +846,8 @@ def scan_tv_bare_files(grouped):
 
             if source_folder is None:
                 # Show exists but not this season - treat as new
-                bare_new.append((show_name, season_num, episode_num, quality, entry.path))
+                bare_new.append((show_name, season_num, episode_num, quality,
+                                 entry.path, second_ep))
                 continue
 
             # Season exists as a folder symlink - check if episode is in source folder
@@ -672,32 +859,21 @@ def scan_tv_bare_files(grouped):
             if exists:
                 if (existing_quality and quality and
                         existing_quality.upper() != quality.upper()):
-                    # Different quality - but first check the actual state of the
-                    # season directory in tv-linked/. If it has already been converted
-                    # to a real directory (from a previous conflict resolution), don't
-                    # try to convert it again - check if the variant symlink already
-                    # exists, and if not route it as a bare_dir_episode instead.
+                    # Different quality - check actual state of the season dir
                     if os.path.isdir(season_path) and not os.path.islink(season_path):
-                        # Season is already a real dir - check if variant already linked
-                        q_suffix      = f" - {quality.upper()}" if quality else ""
-                        expected_stem = (f"{show_name}.S{season_num:02d}"
-                                         f"E{episode_num:02d}{q_suffix}")
-                        already_linked = False
-                        try:
-                            with os.scandir(season_path) as it:
-                                for e in it:
-                                    if (os.path.islink(e.path) and
-                                            os.path.splitext(e.name)[0] == expected_stem):
-                                        already_linked = True
-                                        break
-                        except (PermissionError, FileNotFoundError):
-                            pass
+                        # Season already a real dir - check if variant already linked
+                        expected_name = build_episode_link_name(
+                            show_name, season_num, episode_num, quality,
+                            os.path.splitext(entry.name)[1], second_ep
+                        )
+                        already_linked = os.path.islink(
+                            os.path.join(season_path, expected_name)
+                        )
                         if already_linked:
-                            continue  # Variant already linked - skip silently
-                        # Real dir exists but this variant not yet linked
+                            continue
                         bare_conflicts.append((
                             show_name, season_num, episode_num, quality,
-                            entry.path, 'bare_dir_episode', season_path
+                            entry.path, 'bare_dir_episode', season_path, second_ep
                         ))
                     else:
                         # Season is still a folder symlink - needs conversion
@@ -705,26 +881,23 @@ def scan_tv_bare_files(grouped):
                             show_name, season_num, episode_num, quality,
                             entry.path, 'quality_variant',
                             {'source_folder': source_folder,
-                             'existing_quality': existing_quality}
+                             'existing_quality': existing_quality}, second_ep
                         ))
                 # Same quality already covered by folder symlink - skip silently
             else:
-                # Episode not in source folder at all - check disk state first.
-                # Season may already have been converted to a real dir on a
-                # previous run, in which case we add directly rather than
-                # trying to convert a symlink that no longer exists.
+                # Episode not in source folder at all - check disk state
                 if os.path.isdir(season_path) and not os.path.islink(season_path):
                     if _find_episode_symlink(season_path, episode_num, season_num):
                         continue  # Already linked - skip silently
                     bare_conflicts.append((
                         show_name, season_num, episode_num, quality,
-                        entry.path, 'bare_dir_episode', season_path
+                        entry.path, 'bare_dir_episode', season_path, second_ep
                     ))
                 else:
                     bare_conflicts.append((
                         show_name, season_num, episode_num, quality,
                         entry.path, 'missing_episode',
-                        {'source_folder': source_folder}
+                        {'source_folder': source_folder}, second_ep
                     ))
 
     return bare_new, bare_conflicts, bare_unmatched
@@ -743,9 +916,9 @@ def handle_bare_new(bare_new, dry_run):
         return
 
     grouped_new = {}
-    for show_name, season_num, episode_num, quality, filepath in bare_new:
+    for show_name, season_num, episode_num, quality, filepath, second_ep in bare_new:
         grouped_new.setdefault((show_name, season_num), []).append(
-            (episode_num, quality, filepath)
+            (episode_num, quality, filepath, second_ep)
         )
 
     print(f"\n[BARE FILES - NEW] {len(grouped_new)} show/season(s) with no existing structure:\n")
@@ -760,10 +933,11 @@ def handle_bare_new(bare_new, dry_run):
         ensure_dir(show_dir, dry_run)
         ensure_dir(season_dir, dry_run)
 
-        for episode_num, quality, filepath in sorted(episodes):
+        for episode_num, quality, filepath, second_ep in sorted(episodes):
             ext       = os.path.splitext(filepath)[1]
-            q_suffix  = f" - {quality.upper()}" if quality else ""
-            link_name = f"{show_name}.S{season_num:02d}E{episode_num:02d}{q_suffix}{ext}"
+            link_name = build_episode_link_name(
+                show_name, season_num, episode_num, quality, ext, second_ep
+            )
             link_path = os.path.join(season_dir, link_name)
 
             if os.path.islink(link_path) and os.path.exists(link_path):
@@ -791,6 +965,10 @@ def handle_bare_conflicts(bare_conflicts, dry_run):
         Season real dir already exists from a previous bare-file run.
         New episode is added to the existing real directory.
 
+    If the season has already been converted to a real directory by a previous
+    conflict in the same run, the episode is added directly without attempting
+    another conversion (BUG-01 fix).
+
     In dry-run mode, all conflicts are listed with their planned action.
     No changes are made and no prompts are shown.
 
@@ -802,9 +980,13 @@ def handle_bare_conflicts(bare_conflicts, dry_run):
     print(f"\n[BARE FILES - CONFLICTS] {len(bare_conflicts)} episode(s) need attention:\n")
 
     if dry_run:
-        for show_name, season_num, episode_num, quality, filepath, ctype, info in bare_conflicts:
+        for item in bare_conflicts:
+            show_name, season_num, episode_num, quality, filepath, ctype, info, second_ep = item
             season_label = f"Season {season_num:02d}"
-            print(f"  {show_name} / {season_label} / E{episode_num:02d}"
+            ep_label = f"E{episode_num:02d}"
+            if second_ep:
+                ep_label += f"-E{second_ep:02d}"
+            print(f"  {show_name} / {season_label} / {ep_label}"
                   f"  [{quality or 'unknown quality'}]")
             print(f"    File: {os.path.basename(filepath)}")
             if ctype == 'quality_variant':
@@ -821,18 +1003,30 @@ def handle_bare_conflicts(bare_conflicts, dry_run):
         print("  (run without --dry-run to resolve these interactively)")
         return
 
-    for show_name, season_num, episode_num, quality, filepath, ctype, info in bare_conflicts:
+    for item in bare_conflicts:
+        show_name, season_num, episode_num, quality, filepath, ctype, info, second_ep = item
         season_label = f"Season {season_num:02d}"
         filename     = os.path.basename(filepath)
         ext          = os.path.splitext(filename)[1]
-        q_suffix     = f" - {quality.upper()}" if quality else ""
-        link_name    = f"{show_name}.S{season_num:02d}E{episode_num:02d}{q_suffix}{ext}"
+        link_name    = build_episode_link_name(
+            show_name, season_num, episode_num, quality, ext, second_ep
+        )
         season_path  = os.path.join(TV_LINKED, show_name, season_label)
 
         print(f"\n  {show_name} / {season_label} / E{episode_num:02d}")
         print(f"    File: {filename}")
 
         if ctype in ('quality_variant', 'missing_episode'):
+            # BUG-01 fix: check if a previous conflict in this run already
+            # converted the season from a symlink to a real directory. If so,
+            # just add the episode directly instead of trying to convert again
+            # (which would crash on os.readlink of a real directory).
+            if os.path.isdir(season_path) and not os.path.islink(season_path):
+                print(f"    Season dir already converted, adding episode directly.")
+                link_path = os.path.join(season_path, link_name)
+                _symlink(link_path, filepath, dry_run)
+                continue
+
             if ctype == 'quality_variant':
                 print(f"    Episode already exists in season folder as "
                       f"{info['existing_quality']}")
@@ -947,22 +1141,31 @@ def main(dry_run, clean):
     print(f"\n[TV SOURCE] {len(tv_grouped)} shows:\n")
     for show_name, seasons in sorted(tv_grouped.items()):
         seasons_sorted = sorted(seasons, key=lambda x: x[0])
-        season_str = ", ".join(f"S{s:02d}" for s, _ in seasons_sorted)
+
+        # Resolve duplicate seasons (same season number from different sources)
+        # by prompting the user to choose which quality to link
+        seasons_resolved = resolve_duplicate_seasons(
+            show_name, seasons_sorted, dry_run
+        )
+
+        season_str = ", ".join(f"S{s:02d}" for s, _ in seasons_resolved)
         print(f"  {show_name}  ({season_str})")
 
         show_dir = os.path.join(TV_LINKED, show_name)
         ensure_dir(show_dir, dry_run)
 
-        for season_num, orig_folder in seasons_sorted:
+        for season_num, orig_folder in seasons_resolved:
             season_label = f"Season {season_num:02d}"
             link_path    = os.path.join(TV_LINKED, show_name, season_label)
             target       = os.path.join(TV_SOURCE, orig_folder)
             _symlink(link_path, target, dry_run)
 
+    # Pass-through: safe cosmetic cleanup of folder names (dots to spaces, etc.)
     print(f"\n[TV PASS-THROUGH] {len(tv_passthrough)} folders (symlinked as-is):\n")
     for entry in sorted(tv_passthrough):
-        print(f"  {entry}")
-        link_path = os.path.join(TV_LINKED, entry)
+        clean_name = clean_passthrough_name(entry)
+        print(f"  {clean_name}")
+        link_path = os.path.join(TV_LINKED, clean_name)
         target    = os.path.join(TV_SOURCE, entry)
         _symlink(link_path, target, dry_run)
 
