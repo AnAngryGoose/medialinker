@@ -81,12 +81,15 @@ If you already use Sonarr or Radarr, medialnk can still be useful as a safer pre
   - There are functions that will "pass-through" already properly strctured files without touching them.
   
 ### Safe presentation layer for media servers
+medialnk functionally does not have the ability to delete, move, rename, or otherwise change your existing seeding/source library.
+
 Your files need to stay where/how they are because of **torrent seeding**, shared storage, or existing workflows.
-  - medialnk functionally does not have the ability to delete, move, rename, or otherwise change your existing seeding/source library
+
 medialnk separates:
 
 - **where your files actually live**
 - **how Jellyfin/Plex sees them**
+
 That lets your storage stay practical for downloads, seeding, pooling, or archival purposes while the linked library stays clean and media-server friendly.
 
 ### Symlink presentation layer
