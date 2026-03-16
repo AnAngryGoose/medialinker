@@ -44,7 +44,9 @@ falling back safely if confidence in the match is low.
 
 ## Why this exists
 
-Every existing tool hits at least one wall when dealing with messy, legacy, or manually-downloaded libraries:
+I spent forver trying to get my stuff automated for easy imports. Turned out it was a giant pain the ass. 
+
+Every existing tool hit at least one wall when dealing with my messy,  manually-downloaded libraries:
 
 - **Arr stack:** Importing an existing library is a pain because Sonarr/Radarr need an already-structured library to start.
 - **FileBot:** Renames the **actual files**, which instantly breaks torrent seeding.
