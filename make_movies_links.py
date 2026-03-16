@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-make_movies_links.py  [v0.23]
+make_movies_links.py  [v0.24]
 
 Builds a Jellyfin/Radarr-ready symlink tree from a messy movies folder.
 Reads from /movies/, writes to /movies-linked/. Original files are never
@@ -22,6 +22,7 @@ How it works:
   - Groups multiple versions of the same movie with quality suffixes
   - Creates absolute symlinks using container paths (works inside Docker)
   - No hardlinks - avoids EXDEV on mergerfs pools
+  - PathGuard enforces that all writes target only movies-linked/, never source dirs
   - TMDB lookup available for entries missing a year
 
 Setup:
@@ -51,6 +52,7 @@ from common import (
     is_video, is_sample, is_episode, sanitize_filename, extract_quality,
     make_symlink, ensure_dir, clean_broken_symlinks,
     find_videos_in_folder, largest_video,
+    init_path_guard, validate_output_dir,
 )
 
 # ---------------------------------------------------------------------------
@@ -150,10 +152,21 @@ def _symlink(link_path, target_host_path, dry_run):
 # TMDB lookup
 # ---------------------------------------------------------------------------
 
+# Cache so the same movie title only hits the API once per run.
+_tmdb_movie_cache = {}
+
+
 def tmdb_search(title):
-    """Search TMDB for a movie title. Returns (title, year) or None."""
+    """Search TMDB for a movie title. Returns (title, year) or None.
+    Results are cached per title so each unique title only hits the API once.
+    """
+    if title in _tmdb_movie_cache:
+        return _tmdb_movie_cache[title]
+
     if len(title) < 4:
+        _tmdb_movie_cache[title] = None
         return None
+
     params = urllib.parse.urlencode({"query": title, "api_key": TMDB_API_KEY})
     url = f"https://api.themoviedb.org/3/search/movie?{params}"
     try:
@@ -161,12 +174,16 @@ def tmdb_search(title):
             data = json.loads(resp.read())
         results = data.get("results", [])
         if not results:
+            _tmdb_movie_cache[title] = None
             return None
         top = results[0]
         year = top.get("release_date", "")[:4] or None
         found_title = sanitize_filename(top.get("title", title))
-        return found_title, year
+        result = (found_title, year)
+        _tmdb_movie_cache[title] = result
+        return result
     except Exception:
+        _tmdb_movie_cache[title] = None
         return None
 
 
@@ -428,6 +445,15 @@ def _route_ambiguous_as_movie(entry, title, year, part_files, dry_run):
 # ---------------------------------------------------------------------------
 
 def main(dry_run, clean):
+    # Initialize PathGuard before any filesystem operations.
+    # Source dir is protected (read-only). Output dir is the only
+    # place writes are allowed.
+    init_path_guard(
+        sources=[MOVIES_SOURCE],
+        outputs=[MOVIES_LINKED],
+    )
+    validate_output_dir(MOVIES_LINKED, dry_run)
+
     if clean:
         if os.path.isdir(MOVIES_LINKED):
             print(f"[CLEAN] Removing broken symlinks from {MOVIES_LINKED}...\n")

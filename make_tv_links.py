@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-make_tv_links.py  [v0.23]
+make_tv_links.py  [v0.24]
 
 Builds a Jellyfin/Sonarr-ready symlink tree from disorganized TV and
 miniseries folders. Reads from /tv/ and /movies/, writes to /tv-linked/.
@@ -46,6 +46,7 @@ How it works:
   General:
     - Creates absolute symlinks using container paths (works inside Docker)
     - No hardlinks - avoids EXDEV on mergerfs pools
+    - PathGuard enforces that all writes target only tv-linked/, never source dirs
 
 Setup:
   1. Set MEDIA_ROOT_HOST and MEDIA_ROOT_CONTAINER below
@@ -76,6 +77,8 @@ from common import (
     RE_XNOTATION, RE_EPISODE, RE_NOF,
     is_video, is_sample, sanitize_filename, extract_quality,
     make_symlink, ensure_dir, clean_broken_symlinks,
+    init_path_guard, safe_remove, safe_makedirs, safe_symlink,
+    validate_output_dir,
 )
 
 # ---------------------------------------------------------------------------
@@ -122,29 +125,33 @@ RE_STRIP = re.compile(
 # These take priority over TMDB lookups.
 # Format: "parsed name" -> "name you want"
 NAME_OVERRIDES = {
-    #"A Pup Named Scooby Doo":    "A Pup Named Scooby-Doo",
-    #"A.Pup.Named Scooby-Doo":   "A Pup Named Scooby-Doo",
-    #"The Office US":             "The Office (US)",
-    # "3000" is stripped as a number token — override to preserve full title
-    #"Mystery Science Theater":   "Mystery Science Theater 3000",
+    # "A Pup Named Scooby Doo":    "A Pup Named Scooby-Doo",
+    # "A.Pup.Named Scooby-Doo":   "A Pup Named Scooby-Doo",
+    # "The Office US":             "The Office (US)",
+    # # "3000" is stripped as a number token -- override to preserve full title
+    # "Mystery Science Theater":   "Mystery Science Theater 3000",
 }
 
 # ORPHAN_OVERRIDES: map bare "Season N" folders (no show name in the
 # folder itself) to their correct show. Run --dry-run first to identify
-# orphans — they appear in [TV PASS-THROUGH] without a parent show name.
+# orphans -- they appear in [TV PASS-THROUGH] without a parent show name.
 #
 # Format: "folder name on disk" -> ("Show Name", season_number)
 ORPHAN_OVERRIDES = {
-    # Little Bear — bare Season N folders with no show name in the folder itself
-    #"Season 1": ("Little Bear", 1),
-    #"Season 2": ("Little Bear", 2),
-    # Folders using "Season.N" naming instead of "S04" — files inside are
+    # Little Bear -- bare Season N folders with no show name in the folder itself
+    # "Season 1": ("Little Bear", 1),
+    # "Season 2": ("Little Bear", 2),
+    # "Season 3": ("Little Bear", 3),
+    # "Season 4": ("Little Bear", 4),
+    # "Season 5": ("Little Bear", 5),
+}
+    # Folders using "Season.N" naming instead of "S04" -- files inside are
     # standard S04E01 format so is_bare_episode_folder() won't catch them
-    #"Wild.Kratts.Season.4":  ("Wild Kratts", 4),
-    #"The Blue Planet Season 1": ("The Blue Planet", 1),
-    # Planet Earth — folder has no S01 and files use abbreviated "pe.s01e01" prefix
-    # so neither SEASON_RE nor is_bare_episode_folder() can detect it
-    #"Planet.Earth.1080p.BluRay.x264-CULTHD": ("Planet Earth", 1),
+    #Wild.Kratts.Season.4":  ("Wild Kratts", 4),
+    # "The Blue Planet Season 1": ("The Blue Planet", 1),
+    # # Planet Earth -- folder has no S01 and files use abbreviated "pe.s01e01" prefix
+    # # so neither SEASON_RE nor is_bare_episode_folder() can detect it
+    # "Planet.Earth.1080p.BluRay.x264-CULTHD": ("Planet Earth", 1),
 }
 
 
@@ -429,6 +436,10 @@ def convert_season_symlink_to_real_dir(show_name, season_num, season_symlink_pat
     Only the tv-linked/ structure is modified. The source folder and its contents
     are never opened for writing or otherwise touched.
 
+    All filesystem writes use guarded functions from common.py (safe_remove,
+    safe_makedirs, safe_symlink). Even if a bug in path construction somehow
+    produced a source path here, the PathGuard would catch it and abort.
+
     Returns True if successful (or dry_run), False on error.
     """
     try:
@@ -458,8 +469,12 @@ def convert_season_symlink_to_real_dir(show_name, season_num, season_symlink_pat
     print(f"    Re-linking {len(source_files)} episode(s) as individual symlinks:")
 
     if not dry_run:
-        os.remove(season_symlink_path)
-        os.makedirs(season_symlink_path, exist_ok=True)
+        # Remove the symlink (in tv-linked/) and create a real dir at same path.
+        # Both operations are guarded -- safe_remove and safe_makedirs will
+        # raise SourceProtectionError if season_symlink_path somehow resolves
+        # to a source directory.
+        safe_remove(season_symlink_path)
+        safe_makedirs(season_symlink_path, exist_ok=True)
 
     for f in source_files:
         ep = parse_bare_episode(f.name)
@@ -475,7 +490,7 @@ def convert_season_symlink_to_real_dir(show_name, season_num, season_symlink_pat
         if not dry_run:
             if not os.path.exists(link_path) and not os.path.islink(link_path):
                 container_target = f.path.replace(MEDIA_ROOT_HOST, MEDIA_ROOT_CONTAINER, 1)
-                os.symlink(container_target, link_path)
+                safe_symlink(container_target, link_path)
 
     return True
 
@@ -904,6 +919,15 @@ def collect_warnings(tv_grouped, tv_passthrough):
 # ---------------------------------------------------------------------------
 
 def main(dry_run, clean):
+    # Initialize PathGuard before any filesystem operations.
+    # Source dirs are protected (read-only). Output dir is the only
+    # place writes are allowed.
+    init_path_guard(
+        sources=[TV_SOURCE, MOVIES_SOURCE],
+        outputs=[TV_LINKED],
+    )
+    validate_output_dir(TV_LINKED, dry_run)
+
     if clean:
         if os.path.isdir(TV_LINKED):
             print(f"[CLEAN] Removing broken symlinks from {TV_LINKED}...\n")
