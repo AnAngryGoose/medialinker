@@ -1,6 +1,8 @@
-j# medialnk
+# medialnk
 
 Scans your `/movies/` and `/tv/` folders, figures out what's what, and builds a parallel symlink tree organized the way media servers expect. 
+
+This seperates your library into an immutable, existing "source" library and a variable, parallel "presentation" library. 
 
 Movies, TV shows, and miniseries are automatically separated and correctly restructured regardless of how disorganized the source folder is. 
 
@@ -39,7 +41,7 @@ Run medialnk, point Jellyfin at the `-linked/` directories, done.
 * **Duplicate Handling:** Prompts you to choose which quality to link when two source folders provide the exact same TV season. (or you can keep both automatically)
 * **TMDB Resolution:** Uses a free TMDB API key to resolve messy names to their canonical forms, 
 falling back safely if confidence in the match is low.
-* **Source File Immutability:** medialnk functionally cannot alter, delete, move, rename or otherwise change the source media files in anyway. It build a separate parallel "working library". 
+* **Source File Immutability:** medialnk functionally cannot alter, delete, move, rename or otherwise change the source media files in anyway. It builds a separate parallel "working library". 
 
 ---
 
@@ -104,7 +106,47 @@ medialnk is not a downloader and not a replacement for the arr stack. It is a **
 ---
 
 ## Quick start
+Structure the folder as:
 
+```
+your-repo/
+├── medialnk/
+│   ├── __init__.py
+│   ├── __main__.py
+│   ├── cli.py
+│   ├── common.py
+│   ├── config.py
+│   ├── movies.py
+│   ├── resolver.py
+│   ├── test_library.py
+│   └── tv.py
+├── medialnk.toml
+├── pyproject.toml
+├── README.md
+├── OVERVIEW.md
+└── CHANGELOG.md
+```
+
+### Run with `pip`
+From the repo root:
+
+#### Create the .venv 
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+#### Install the project 
+
+```bash
+pip install -e .
+medialnk sync --dry-run
+medialnk sync
+
+# Point Jellyfin at movies-linked/ and tv-linked/
+```
+
+### Run from Source
 ```bash
 # 1. Create config
 cp medialnk.toml ~/.config/medialnk/medialnk.toml

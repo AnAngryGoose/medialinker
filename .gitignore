@@ -1,0 +1,6 @@
+__dev
+__pycache__
+.venv
+logs
+medialnk.egg-info
+_medialnk.toml

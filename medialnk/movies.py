@@ -1,5 +1,5 @@
 """
-movies.py
+movies.py [v1.0.1]
 
 Movies scanning, categorization, and symlink creation.
 Reads from movies_source, writes to movies_linked.
@@ -23,23 +23,34 @@ RE_STRIP = re.compile(
     r'(?:19|20)\d{2}|'
     r'2160p|1080p|720p|576p|480p|'
     r'REPACK\d*|BluRay|BDRip|Blu-ray|'
-    r'WEB-DL|WEBRip|AMZN|NF|HMAX|PMTP|HDTV|DVDRip|DVDrip|UHD|'
+    r'WEB-DL|WEBRip|AMZN|NF|HMAX|PMTP|HDTV|DVDRip|DVDrip|UHD|VHS|'
     r'HDR\d*|DV|DDP[\d.]*|DD[\+\d.]*|DTS|FLAC[\d.]*|AAC[\d.]*|AC3|Opus|'
     r'x264|x265|H\.264|H\.265|h264|h265|AVC|HEVC|'
-    r'REMASTERED|EXTENDED|UNRATED|LIMITED|DOCU|CRITERION|PROPER|'
+    r'REMASTERED|EXTENDED|UNRATED|LIMITED|DOCU|CRITERION|PROPER|Uncut|'
     r'(?-i:[A-Z]{2,}-[A-Z][A-Za-z0-9]+))'
     r'.*$',
     re.IGNORECASE,
 )
 
 
+def _normalize(name):
+    """Treat underscores as word separators before any parsing.
+
+    Some filenames (especially older scene releases and VHS rips) use
+    underscores as separators instead of dots or spaces. Without this,
+    RE_YEAR lookbehind misses years in _1995_ and RE_STRIP never fires
+    because it requires a dot or space prefix.
+    """
+    return name.replace('_', '.')
+
+
 def _year(name):
-    m = RE_YEAR.search(name)
+    m = RE_YEAR.search(_normalize(name))
     return m.group(1) if m else None
 
 
 def _title(name):
-    name = os.path.splitext(name)[0]
+    name = os.path.splitext(_normalize(name))[0]
     s = RE_STRIP.sub('', name)
     if ' ' not in s:
         s = s.replace('.', ' ')

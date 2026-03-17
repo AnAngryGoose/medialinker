@@ -1,10 +1,11 @@
 """
-resolver.py
+resolver.py [v1.0.1]
 
 TMDB lookups with caching and word-overlap confidence checking.
 Unified for movies and TV. Imports only from common.
 """
 
+import re
 import json
 import urllib.request
 import urllib.parse
@@ -15,10 +16,24 @@ _cache = {}
 
 
 def _word_overlap(parsed, result):
-    """Word-set confidence check. Short names (1-2 words): all must match
-    and result can have at most 1 extra word. Longer: >= 50% overlap."""
-    pw = set(parsed.lower().split())
-    rw = set(result.lower().split())
+    """Word-set confidence check against TMDB result.
+
+    Both strings are normalized to plain lowercase words before comparison.
+    This handles titles that differ by special characters like degrees (180
+    vs 180), hyphens used as word joiners (light-black vs light black),
+    and apostrophes (alma's vs almas).
+
+    Short names (1-2 words): all parsed words must appear in result, and
+    result can have at most 1 extra word.
+    Longer names: at least 50% of parsed words must appear in result.
+    """
+    def _words(s):
+        s = s.lower()
+        s = re.sub(r"[^\w\s]", " ", s)
+        return set(w for w in s.split() if w)
+
+    pw = _words(parsed)
+    rw = _words(result)
     if not pw:
         return False
     overlap = pw & rw

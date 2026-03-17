@@ -1,5 +1,5 @@
 """
-tv.py
+tv.py [v1.0.1]
 
 TV scanning, bare file handling, conflict resolution, linking.
 Reads from tv_source and movies_source, writes to tv_linked.
@@ -11,7 +11,7 @@ import re
 from .common import (
     RE_SXXEXX, RE_BARE_EPISODE, RE_PART, RE_MULTI_EP,
     RE_XNOTATION, RE_EPISODE, RE_NOF,
-    is_video, is_sample, episode_info, extract_quality, sanitize,
+    is_video, is_sample, is_episode_file, episode_info, extract_quality, sanitize,
     make_symlink, ensure_dir, clean_passthrough_name,
     safe_remove, safe_makedirs, safe_symlink, prompt_choice,
 )
@@ -19,6 +19,31 @@ from .resolver import resolve_tv_name
 
 # TV-specific regex
 SEASON_RE = re.compile(r'^(.+?)[. ]([Ss])(\d{2})([Ee]\d+.*|[. ].*)$')
+
+# Matches "Show Name Season N" / "Show.Name.Season.4" folder naming.
+# Allows spaces, dots, underscores, or hyphens as separators before the
+# word "Season". Used as a fallback when SEASON_RE does not match.
+SEASON_TEXT_RE = re.compile(
+    r'^(.+?)[. _\-]+Season[. _](\d{1,2})(?:[. _\-]|$)',
+    re.IGNORECASE,
+)
+
+# Detects a multi-season range indicator like S01-S31 in a folder name.
+# Folders matching this are season containers to recurse into.
+RE_SEASON_RANGE = re.compile(r'[Ss]\d{1,2}-[Ss]\d{1,2}')
+
+# Matches a bare "Season N" or "Season 01" folder with no preceding show name.
+# Used when recursing inside a season container.
+RE_SEASON_ONLY = re.compile(r'^[Ss]eason[. _](\d{1,2})(?:[. _]|$)', re.IGNORECASE)
+
+# Strips the range indicator and common "complete pack" keywords from a
+# container folder name, leaving just the show title.
+RE_CONTAINER_STRIP = re.compile(
+    r'[. _](?:complete|collection|pack|series|full)[. _].*$'
+    r'|[. _][Ss]\d{1,2}-[Ss]\d{1,2}.*$',
+    re.IGNORECASE,
+)
+
 RE_STRIP = re.compile(
     r'[. ]([Ss]\d{2}([Ee]\d{2})?|'
     r'\d{4}|'
@@ -39,16 +64,32 @@ RE_STRIP = re.compile(
 # ---------------------------------------------------------------------------
 
 def _show_season(folder, overrides):
-    """Parse 'Show.Name.S01.720p...' -> (show, season_num) or (None, None)."""
+    """Parse a season folder name into (show, season_num) or (None, None).
+
+    Tries two formats in order:
+    1. Standard SNN notation: ShowName.S01.720p...
+    2. Spelled-out Season text: ShowName.Season.4 / Show Name Season 1
+    """
     m = SEASON_RE.match(folder)
-    if not m:
-        return None, None
-    raw = m.group(1)
-    snum = int(m.group(3))
-    show = raw.replace('.', ' ').strip() if ' ' not in raw else raw.strip()
-    show = re.sub(r'\s+\d{4}$', '', show)
-    show = sanitize(overrides.get(show, show))
-    return show, snum
+    if m:
+        raw = m.group(1)
+        snum = int(m.group(3))
+        show = raw.replace('.', ' ').strip() if ' ' not in raw else raw.strip()
+        show = re.sub(r'\s+\d{4}$', '', show)
+        show = sanitize(overrides.get(show, show))
+        return show, snum
+
+    m = SEASON_TEXT_RE.match(folder)
+    if m:
+        raw = m.group(1)
+        snum = int(m.group(2))
+        show = raw.replace('.', ' ').strip() if ' ' not in raw else raw.strip()
+        show = re.sub(r'\s+\d{4}$', '', show)
+        show = show.strip(' -')
+        show = sanitize(overrides.get(show, show))
+        return show, snum
+
+    return None, None
 
 
 def _clean_show(folder):
@@ -60,10 +101,16 @@ def _clean_show(folder):
 
 
 def _is_bare_ep_folder(folder):
+    """Check if a folder contains individually-named episode files or dirs.
+
+    Uses is_episode_file() for video files so that all naming patterns
+    (SxxExx, NofN, Episode.N, bare E-notation) are recognized, not just
+    the bare E-notation subset.
+    """
     count = 0
     with os.scandir(folder) as it:
         for e in it:
-            if e.is_file() and is_video(e.name) and RE_BARE_EPISODE.search(e.name):
+            if e.is_file() and is_video(e.name) and is_episode_file(e.name):
                 count += 1
             elif e.is_dir() and RE_BARE_EPISODE.search(e.name):
                 count += 1
@@ -229,6 +276,54 @@ def _convert_season(show, snum, path, cfg, dry_run, log):
 # Pass 1 scanners
 # ---------------------------------------------------------------------------
 
+def _scan_season_container(folder_name, folder_path, overrides):
+    """Handle a folder that contains multiple season subfolders.
+
+    Recognizes the S01-S31 style range indicator in the folder name, extracts
+    the show title from the container folder, then recurses one level to find
+    season subfolders. Each recognized subfolder is returned as a
+    (show, season_num, relative_path) tuple.
+
+    The relative path is suitable for joining with cfg.tv_source to build the
+    symlink target, so the actual season folder inside the container is what
+    gets linked, not the container itself.
+
+    Returns an empty list if the folder name has no range indicator or no
+    recognized season subfolders are found inside.
+    """
+    if not RE_SEASON_RANGE.search(folder_name):
+        return []
+
+    raw = RE_CONTAINER_STRIP.sub('', folder_name)
+    if not raw:
+        raw = folder_name
+    if ' ' not in raw:
+        raw = raw.replace('.', ' ')
+    show_name = raw.strip(' .-_')
+    show_name = re.sub(r'\s+\d{4}$', '', show_name).strip()
+    if not show_name:
+        return []
+    show_name = sanitize(overrides.get(show_name, show_name))
+
+    results = []
+    try:
+        with os.scandir(folder_path) as it:
+            for e in sorted(it, key=lambda x: x.name):
+                if not e.is_dir():
+                    continue
+                _, snum = _show_season(e.name, {})
+                if snum is None:
+                    m = RE_SEASON_ONLY.match(e.name)
+                    if m:
+                        snum = int(m.group(1))
+                if snum is not None:
+                    rel = os.path.join(folder_name, e.name)
+                    results.append((show_name, snum, rel))
+    except (PermissionError, FileNotFoundError):
+        pass
+    return results
+
+
 def _scan_tv(cfg):
     grouped, name_map, pt = {}, {}, []
     def canon(show):
@@ -255,7 +350,12 @@ def _scan_tv(cfg):
             show = sanitize(cfg.tv_name_overrides.get(show, show))
             grouped.setdefault(canon(show), []).append((1, nm))
         else:
-            pt.append(nm)
+            seasons = _scan_season_container(nm, entry.path, cfg.tv_name_overrides)
+            if seasons:
+                for show, snum, rel in seasons:
+                    grouped.setdefault(canon(show), []).append((snum, rel))
+            else:
+                pt.append(nm)
     return grouped, pt
 
 
@@ -415,7 +515,6 @@ def _handle_conflicts(conflicts, cfg, dry_run, auto, log):
         sp = os.path.join(cfg.tv_linked, show, sl)
 
         if ctype in ('quality', 'missing'):
-            # Already converted by earlier conflict this run?
             if os.path.isdir(sp) and not os.path.islink(sp):
                 log.verbose(f"  {show} S{sn:02d}E{en:02d}: already converted, adding")
                 lp = os.path.join(sp, ln)
@@ -480,7 +579,7 @@ def _warnings(grouped, pt):
     for p in pt:
         n = _norm_compare(p)
         if n in gn:
-            w.append(f"Name overlap: '{gn[n]}' and pass-through '{p}'")
+            w.append(f"Name overlap: '{gn[n]}' and unprocessed '{p}'")
     return w
 
 
@@ -510,14 +609,14 @@ def run(cfg, dry_run=False, auto=False, log=None):
             if make_symlink(lp, tgt, dry_run, cfg.host_root, cfg.container_root):
                 seasons_linked += 1
 
-    # Pass-through
+    # Unprocessed (could not be matched to a show/season structure)
     pt_count = 0
     for entry in sorted(pt):
         cn = clean_passthrough_name(entry)
         lp = os.path.join(cfg.tv_linked, cn)
         tgt = os.path.join(cfg.tv_source, entry)
         if make_symlink(lp, tgt, dry_run, cfg.host_root, cfg.container_root):
-            log.verbose(f"  [PASS] {cn}")
+            log.verbose(f"  [UNPROCESSED] {cn}")
             pt_count += 1
 
     # Miniseries
@@ -550,7 +649,7 @@ def run(cfg, dry_run=False, auto=False, log=None):
 
     log.normal(
         f"[TV] {shows} shows ({seasons_linked} seasons), "
-        f"{pt_count} pass-through, {mini_count} miniseries, "
+        f"{pt_count} unprocessed, {mini_count} miniseries, "
         f"{new_count} bare new, {conflict_count} conflicts, "
         f"{len(unmatched)} unmatched"
     )

@@ -1,5 +1,53 @@
 # Changelog
 
+## v1.0.1 -- v1.0.0 Bug/Matching Fixes and doc updates
+
+Various bug fixes and documentation updates
+
+### Changes 
+
+- **Added** OVERVIEW.md giving a more detailed overview. Covers all functions, matching scenarios, decision trees, and more for v1.0.0
+- **Added** `pyrpoject.toml` to allow installation using `pip`
+- **Testing** of pip install and matching carried out. Found a few matching situations that could improve.
+
+### Fixes
+
+- **resolver.py** - `_word_overlap()` normalized before comparison
+
+- The old version split raw strings on spaces. Anything attached to a word by a special character was treated as a different word entirely. `180°` vs `180`, `light-black` vs `light black`, `alma's` vs `almas` all failed as a result. The fix strips everything non-alphanumeric from both sides before comparing word sets. This single change fixes the `180 South`, `White Light Black Rain`, and `Alma's Way` confidence failures.
+
+**movies.py** - `_normalize()` + `VHS` and `Uncut` added to `RE_STRIP`
+
+-   Underscore-delimited filenames (`Microsoft_Windows_95_Video_Guide_1995...`) bypassed both `RE_YEAR` (lookbehind requires `.` or whitespace, not `_`) and `RE_STRIP` (prefix requires `[. (]`, not `_`). Added a `_normalize()` helper that converts underscores to dots before any parsing, and both `_year()` and `_title()` run through it. Also added `VHS` and `Uncut` to the strip pattern since this surfaced a real example.
+
+**tv.py** - four changes:
+
+- **`SEASON_TEXT_RE` + `_show_season()` fallback**: `Wild.Kratts.Season.4` and `The Blue Planet Season 1` never matched `SEASON_RE` because that regex requires `SNN` notation specifically. Added `SEASON_TEXT_RE` as a second attempt. `_show_season()` now tries the standard `SNN` pattern first, then falls back to the spelled-out `Season N` pattern.
+
+- **`_is_bare_ep_folder()` uses `is_episode_file()`**: The old check used `RE_BARE_EPISODE` for files, which only matches `ENN` notation. `BBC - The death of Yugoslavia` uses `(1of6)` naming inside, which `is_episode_file()` handles via `RE_NOF`. The fix is one line: replace the inline `RE_BARE_EPISODE.search(e.name)` file check with `is_episode_file(e.name)`. The dir check (for things like `BBC.Frozen.Planet.E01.../`) still correctly uses `RE_BARE_EPISODE` since those are subdirectory names.
+
+- **`_scan_season_container()` for multi-season packs**: `The.Joy.of.Painting.COMPLETE.S01-S31.DVDRip-Mixed` has 31 season subfolders inside it. Nothing previously recognized this pattern. The new function detects `S01-SNN` in the top-level folder name, strips it plus common pack keywords (`COMPLETE`, `Collection` etc.) to get the show title (`The Joy of Painting`), then recurses one level to find season subfolders. Each subfolder is parsed for its season number using both `_show_season()` and a bare `Season N` fallback. The resulting `(show, snum, relative_path)` entries plug directly into `grouped` with relative paths like `The.Joy.of.Painting.COMPLETE.S01-S31.../Bob Ross - ... - Season 01.DVDRip.x264` that `os.path.join(cfg.tv_source, folder)` resolves correctly.
+
+- **`[PASS]` -> `[UNPROCESSED]`**: Renamed everywhere it appears in log output and the summary line. The old label reads as success. The new label is accurate: the folder was linked as-is because the naming system couldn't process it.
+
+### Match improvment results
+
+**v1.0.0**
+
+```
+[MOVIES] 933 entries: 933 linked, 31 flagged, 24 skipped, 2 ambiguous, 22 TMDB resolved
+[TV] 89 shows (283 seasons), 10 pass-through, 107 miniseries, 84 bare new, 0 conflicts, 5 unmatched
+```
+
+**v1.0.1**
+
+```
+[MOVIES] 934 entries: 934 linked, 30 flagged, 24 skipped, 2 ambiguous, 24 TMDB resolved
+[TV] 98 shows (323 seasons), 0 unprocessed, 107 miniseries, 84 bare new, 0 conflicts, 5 unmatched
+```
+
+---
+
 ## v1.0.0 -- Unified package release
 
 Complete restructure from two standalone scripts into a unified Python package with TOML config, subcommands, and per-run logging.
