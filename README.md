@@ -1,14 +1,10 @@
 # medialnk
 
-Scans your `/movies/` and `/tv/` folders, figures out what's what, and builds a parallel symlink tree organized the way media servers expect. 
+Scans your `/movies/` and `/tv/` folders, figures out what's what, and builds a parallel symlink tree organized the way media servers expect.
 
-This seperates your library into an immutable, existing "source" library and a variable, parallel "presentation" library. 
+This separates your library into an immutable "source" layer and a clean "presentation" layer. Movies, TV shows, and miniseries are automatically separated and correctly restructured regardless of how disorganized the source folder is. The original (seeding) files stay exactly where they are.
 
-Movies, TV shows, and miniseries are automatically separated and correctly restructured regardless of how disorganized the source folder is. 
-
-The original (seeding) files stay exactly where/how they are.
-
-Can be used as a one-time library importer, ongoing media library manager, or both. 
+Can be used as a one-time library importer, ongoing media library manager, or as a companion tool to the arr stack. Or all three at the same time.
 
 ```text
 What you have (Messy Source):         What medialnk builds (Clean Symlinks):
@@ -24,142 +20,131 @@ What you have (Messy Source):         What medialnk builds (Clean Symlinks):
   Breaking.Bad.S01E04.720p.mkv          Mini Series/
   Fallout.S01E05-E06.1080p.mkv            Season 01/
                                             episode.mkv -> original
-
 ```
 
 Run medialnk, point Jellyfin at the `-linked/` directories, done.
 
-**Requires Python 3.11+** (uses stdlib `tomllib`, zero external dependencies).
-
----
-## Main Features 
-
-* **Smart Movie Parsing:** Extracts titles and years from messy scene names, grouping multiple quality versions (e.g., 1080p and 2160p) into the same canonical folder.
-* **TV & Bare Episode Handling:** Groups season folders and automatically matches loose, bare episode files (e.g., `S01E05`, `3x05`, `Episode.4`, more) into their correct season directories.
-  - Many different file conflict resolutions solved automatically, anything ambiguous will prompt to confirm 
-* **Miniseries Detection:** Automatically detects folders in your `/movies/` directory that contain multiple episode files and routes them to your TV library instead.
-* **Duplicate Handling:** Prompts you to choose which quality to link when two source folders provide the exact same TV season. (or you can keep both automatically)
-* **TMDB Resolution:** Uses a free TMDB API key to resolve messy names to their canonical forms, 
-falling back safely if confidence in the match is low.
-* **Source File Immutability:** medialnk functionally cannot alter, delete, move, rename or otherwise change the source media files in anyway. It builds a separate parallel "working library". 
-
 ---
 
-## Why this exists
+## Why this is different
 
-I spent forver trying to get my stuff automated for easy imports. Turned out it was a giant pain the ass. 
+The standard recommendation for managing a media library is hardlinks into a structured folder. That breaks on mergerfs. When source and destination land on different physical drives under the union mount, `os.link()` returns `EXDEV: cross-device link not permitted`. Symlinks follow the unified mount path regardless of physical drive layout and always work.
 
-Every existing tool hit at least one wall when dealing with my messy,  manually-downloaded libraries:
+Beyond that, every other tool hits at least one wall:
 
-- **Arr stack:** Importing an existing library is a pain because Sonarr/Radarr need an already-structured library to start.
-- **FileBot:** Renames the **actual files**, which instantly breaks torrent seeding.
-- **Hardlinks:** Fail completely on mergerfs pools with `EXDEV: cross-device link not permitted` if the source and destination land on different physical drives.
-- **rclone union** and similar tools merge filesystem paths but can't rename, categorize, or restructure anything.
-- **Manual Sorting:** Manually sorting thousands of files is unreasonable and insanely time consuming. 
+- **Arr stack (Radarr/Sonarr):** Great for new downloads. Importing an existing disorganized library is genuinely painful because Radarr needs a structured library to start with. It can't import what it can't parse. If you have years of scene-named torrents sitting in a flat folder, you're stuck before you begin.
+- **FileBot:** Renames the actual files. Breaks seeding immediately. `--action symlink` exists but still requires you to manually pre-sort movies from TV before it can match anything.
+- **rclone union and similar:** Merges paths, can't rename or restructure anything. Same mess, different mount point.
+- **Manual sorting:** Sure. Spend a weekend on it, miss some, do it again next month.
+
+medialnk's approach is to not touch your source files at all. It reads filenames, builds a clean tree of symlinks somewhere else, and that's it. Your torrent client keeps seeding from unchanged paths. Your media server gets a properly organized library. The two layers are completely independent.
+
+---
+
+## How it works with Radarr and Sonarr
+
+medialnk and the arr stack are not competitors. They solve adjacent problems and work well together.
+
+**Radarr/Sonarr handle:** Searching indexers, automating downloads, tracking quality upgrades, managing the lifecycle of content they know about. For anything Radarr manages end-to-end, Radarr is the right tool.
+
+**medialnk handles:** Everything outside that. Manually grabbed torrents, niche releases, specific encodes, your existing library that Radarr has never seen. Content that arrived before you set up the arr stack. Anything you want to grab yourself without Radarr being involved.
+
+In practice the clean split is:
+
+```
+/media/torrents/          <- qBittorrent downloads here (seeding source, never touched)
+/media/movies-linked/     <- medialnk output (manually acquired content)
+/media/tv-linked/         <- medialnk output (manually acquired TV)
+/media/radarr-movies/     <- Radarr root (Radarr-managed content only)
+/media/sonarr-tv/         <- Sonarr root (Sonarr-managed content only)
+```
+
+Jellyfin points at both `movies-linked/` and `radarr-movies/` as a combined library. Radarr and medialnk are drawing from the same source folder but outputting to separate places. No collisions, no duplicate files appearing in Jellyfin.
+
+### Getting Radarr started on an existing library
+
+This is where medialnk actually helps the arr stack directly. If you have a large existing library, Radarr's manual import tool works against the `-linked/` directories. Because medialnk has already parsed and organized everything into proper `Movie Name (Year)/` folders, Radarr can match and import the whole library in one pass. After that initial import, turn Radarr's rename setting back on and let it manage new downloads from there.
+
+Without medialnk, this initial import step is the part that takes a weekend.
+
+### Automated processing on download completion
+
+The cleanest setup for an ongoing workflow is triggering medialnk automatically when a torrent completes. In qBittorrent, under "Run external program on torrent completion":
+
+```
+medialnk sync --yes
+```
+
+Radarr already notifies Jellyfin when it imports. medialnk running on torrent completion means manually grabbed content shows up in Jellyfin just as automatically. Both pipelines keep Jellyfin updated without any manual steps.
+
+---
+
+## Main Features
+
+- **Smart Movie Parsing:** Extracts titles and years from scene names, groups multiple quality versions (1080p and 2160p) into the same canonical folder.
+- **TV and Bare Episode Handling:** Groups season folders and matches loose bare episode files (`S01E05`, `3x05`, `Episode.4`, etc.) into their correct season directories. Conflicts are resolved automatically where possible, and anything ambiguous prompts for confirmation.
+- **Miniseries Detection:** Automatically detects folders in `/movies/` that contain episode files and routes them to the TV library instead.
+- **Duplicate Handling:** When two source folders provide the same TV season at different qualities, you're prompted to choose. Or you can keep both.
+- **TMDB Resolution:** Free TMDB API key resolves messy names to canonical forms. Falls back safely when confidence is low rather than making a wrong guess.
+- **Source File Immutability:** medialnk functionally cannot alter, delete, move, rename, or otherwise change source media files. This is enforced at the compiler level, not just by convention. Misconfiguration cannot cause it either.
+- **Pass-through for already-structured content:** Properly structured folders are passed through without modification. Running medialnk against a library that Radarr or Sonarr already manages won't break anything.
 
 ---
 
 ## What this is for
 
-medialnk is for people who want a clean media-server library. The output library is a parellel library of symlinks to then pass on to other services (Jellyfin/Arr), while treating your media library (torrents, etc) as an immutable, unchangable source. 
-
-It works well with following situations: 
-
 ### One-time library cleanup
- Run medialnk once to turn a disorganized media collection into a clean linked library for Jellyfin or Plex.
-  - Works well as a single use organizer. (original purpose)
-  - Reads raw scene-named folders/files and builds the right structure automatically
+
+Run medialnk once to turn a disorganized media collection into a clean linked library for Jellyfin or Plex. Works well as a single-use organizer. Original purpose.
 
 ### Ongoing linked-library maintenance
 
-Run medialnk repeatedly as your source library changes.Works well if You **download media manually** and do not want to depend on Sonarr or Radarr for everything (or anything)
-  - This will quickly re-organize library as you make changes. 
-  - Can run as an automated service [PLANNED], scanning for changes, and outputting changes to an organized, presentation layer for existing library. 
-  - medialnk still has full compatability with the Arr stack in almost all cases.
-  - There are functions that will "pass-through" already properly strctured files without touching them.
+Run medialnk repeatedly as your source library changes. Useful if you download media manually and don't want to depend on Sonarr or Radarr for everything (or anything). Quickly re-organizes as you add content. Can run as an automated service scanning for changes.
 
-### Companion tool for Sonarr/Radarr
-If you already use Sonarr or Radarr, medialnk can still be useful as a safer presentation layer between your source storage and your media server. It does not replace the arr stack's download and upgrade workflow. It complements it.
-  - medialnk still has full compatability with the Arr stack in almost all cases.
-  - There are functions that will "pass-through" already properly strctured files without touching them.
-  
-### Safe presentation layer for media servers
-medialnk functionally does not have the ability to delete, move, rename, or otherwise change your existing seeding/source library.
+### Bootstrapping Radarr/Sonarr
 
-Your files need to stay where/how they are because of **torrent seeding**, shared storage, or existing workflows.
+Run medialnk once to produce clean structured directories, use those as the source for Radarr/Sonarr's manual import with rename turned off, then hand the ongoing management to arr. Gets you from chaos to a working arr-managed library without manually sorting thousands of files.
 
-medialnk separates:
+### Companion tool for arr stack
 
-- **where your files actually live**
-- **how Jellyfin/Plex sees them**
+Manages the manually acquired content that falls outside Radarr's awareness, while Radarr handles automated downloads. Both pipelines feed Jellyfin from separate output directories. Full arr compatibility is maintained throughout.
 
-That lets your storage stay practical for downloads, seeding, pooling, or archival purposes while the linked library stays clean and media-server friendly.
+### Safe presentation layer where hardlinks break
 
-### Symlink presentation layer
-
-You use **mergerfs**, a different FUSE filesystem, seperate media drives, or pooled storage where hardlink-based workflows break. 
-  - If your source file and destination land on different physical drives under the merger, `os.link()` returns `EXDEV: cross-device link not permitted`.
-  - Symlinks will always work, regardless of drive, filesystem, or source. 
-
-medialnk is not a downloader and not a replacement for the arr stack. It is a **linked-library organizer and maintenance tool**.
+For mergerfs, separate media drives, pooled storage, or any setup where `os.link()` returns `EXDEV`. Symlinks work regardless of drive, filesystem, or source location.
 
 ---
 
-## Quick start
-Structure the folder as:
+## Quick Start
 
-```
-your-repo/
-├── medialnk/
-│   ├── __init__.py
-│   ├── __main__.py
-│   ├── cli.py
-│   ├── common.py
-│   ├── config.py
-│   ├── movies.py
-│   ├── resolver.py
-│   ├── test_library.py
-│   └── tv.py
-├── medialnk.toml
-├── pyproject.toml
-├── README.md
-├── OVERVIEW.md
-└── CHANGELOG.md
-```
-
-### Run with `pip`
-From the repo root:
-
-#### Create the .venv 
+### Download a release binary
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-```
-#### Install the project 
-
-```bash
-pip install -e .
-medialnk sync --dry-run
-medialnk sync
-
-# Point Jellyfin at movies-linked/ and tv-linked/
+# Download the latest release for your platform from the releases page
+# Place it somewhere in your PATH, e.g.:
+mv medialnk /usr/local/bin/medialnk
+chmod +x /usr/local/bin/medialnk
 ```
 
-### Run from Source
+### Build from source
+
 ```bash
-# 1. Create config
+git clone https://github.com/AnAngryGoose/medialnk
+cd medialnk
+go build -o medialnk .
+```
+
+### Configure and run
+
+```bash
 cp medialnk.toml ~/.config/medialnk/medialnk.toml
 # Edit paths to match your setup
 
-# 2. Preview
-python3 -m medialnk sync --dry-run
-
-# 3. Run
-python3 -m medialnk sync
-
-# 4. Point Jellyfin at movies-linked/ and tv-linked/
+medialnk sync --dry-run
+medialnk sync
 ```
+
+Point Jellyfin at `movies-linked/` and `tv-linked/`.
 
 ---
 
@@ -194,19 +179,15 @@ medialnk --version
 
 ## Configuration
 
-### Config file location
-
-Searched in order:
+Config file is searched in order:
 1. `--config /path/to/medialnk.toml` (CLI flag)
 2. `./medialnk.toml` (current directory)
 3. `~/.config/medialnk/medialnk.toml`
 
-### Config format (TOML)
-
 ```toml
 [paths]
 media_root_host = "/mnt/storage/data/media"
-media_root_container = "/data/media"    # same as host if no Docker
+media_root_container = "/data/media"    # same as host if not using Docker
 movies_source = "movies"                # relative to media_root_host
 tv_source = "tv"
 movies_linked = "movies-linked"
@@ -227,33 +208,26 @@ verbosity = "normal"                    # quiet/normal/verbose/debug
 "Season 1" = { show = "Little Bear", season = 1 }
 ```
 
-### Config vs CLI
-
-- **Config file:** how the installation normally behaves (paths, API keys, overrides)
-- **CLI flags:** how this particular run should behave (`--dry-run`, `--yes`, `-v`)
-
-CLI flags override config where they overlap.
-
+Config file controls how the installation normally behaves (paths, API keys, overrides). CLI flags control how a particular run behaves (`--dry-run`, `--yes`, `-v`). CLI flags override config where they overlap.
 
 ---
 
-## Technical Info / How it works [needs updating but this basic idea]
+## How it works
 
 ### Movies pipeline
 
-Scans `/movies/`, extracts title and year from folder/file names, groups multi-version entries with quality suffixes, creates symlinks in `/movies-linked/`.
+Scans `/movies/`, extracts title and year from folder and file names, groups multi-version entries with quality suffixes, creates symlinks in `/movies-linked/`.
 
-- Skips miniseries folders (2+ episode files) for the TV pipeline
-- Flags Part.N folders as ambiguous (prompts for movie vs TV routing)
+- Skips miniseries folders (2+ episode files) and routes them to TV
+- Flags Part.N folders as ambiguous and prompts for movie vs TV routing
 - TMDB auto-lookup for entries missing a year
-- Multi-version: `Movie (Year) - 1080P.mkv`, `Movie (Year) - 2160P.mkv`
-- Same-quality duplicates: `Movie (Year) - 1080P.2.mkv`
+- Multi-version output: `Movie (Year) - 1080P.mkv`, `Movie (Year) - 2160P.mkv`
 
 ### TV pipeline (two passes)
 
-**Pass 1:** Scans `/tv/` for season folders, groups by show name, creates season symlinks. Scans `/movies/` for miniseries. Passes through already-structured folders. Prompts on duplicate seasons (different qualities).
+**Pass 1:** Scans `/tv/` for season folders, groups by show name, creates season symlinks. Scans `/movies/` for miniseries. Passes through already-structured folders. Prompts on duplicate seasons at different qualities.
 
-**Pass 2:** Handles bare episode files in `/tv/` with no parent folder. Parses show name, resolves via overrides/TMDB/fallback, matches against Pass 1 results. Handles conflicts interactively (quality variants, missing episodes, season conversions).
+**Pass 2:** Handles bare episode files in `/tv/` with no parent folder. Parses show name, resolves via overrides/TMDB/fallback, matches against Pass 1 results. Handles conflicts interactively.
 
 ### Episode format support
 
@@ -263,36 +237,28 @@ Scans `/movies/`, extracts title and year from folder/file names, groups multi-v
 | Multi-ep | `Show.S01E05-E06.mkv` | Supported (combined name) |
 | NxNN | `Futurama.3x05.mkv` | Supported |
 | Episode.N | `Documentary.Episode.4.mkv` | Supported |
-| NofN | `Planet.Earth.1of6.mkv` | Folder scan only (not bare files) |
+| NofN | `Planet.Earth.1of6.mkv` | Folder scan only |
 | Bare E01 | `pe.E01.mkv` | Folder detection only |
 | Part.N | `Kill.Bill.Part.1.mkv` | Ambiguity prompt (not auto-routed) |
 
 ### TMDB confidence checking
 
-TMDB results are validated before acceptance. Short parsed names (1-2 words) require all words present in the result with at most 1 extra word. Longer names require 50%+ word overlap. Rejected matches fall back to the parsed name and print `[TMDB] Rejected`.
+Results are validated before acceptance. Short parsed names (1-2 words) require all words present in the TMDB result with at most 1 extra word. Longer names require 50%+ word overlap. Rejected matches fall back to the parsed name.
 
 ### Source protection
 
+Two independent layers prevent source files from being modified:
 
-Immutability of the existing source library is a main design trait. Two independent layers prevent your original media from being modified:
-
-1. **File Path Protection (runtime):** Every filesystem write goes through guarded functions. Writes to source directories raise `SourceProtectionError` and crash immediately.
-
-2. **Output validation (startup):** Output directories are scanned for real video files on every run. If found, the user is warned and prompted before any work begins.
-
-There is no functional ability for medialnk to delete or modify the source (seeding) files in any way. This includes misconfiguration. 
+1. **Compiler-enforced path guard:** All filesystem write functions accept only `SafePath`, never raw string paths. `SafePath` can only be constructed by `NewSafePath()`, which validates the path is under a registered output root. A raw string path cannot reach a write function — this is a compile error, not a runtime crash. Misconfiguration cannot bypass it.
+2. **Output validation on startup:** Output directories are scanned for real video files on every run. If found, you're warned and prompted before anything proceeds.
 
 Source files are never read for content, only filenames and sizes.
-
----
 
 ---
 
 ## Manual Overrides
 
 ### TV name overrides
-
-Fix show names that parse wrong or don't match TVDB:
 
 ```toml
 [overrides.tv_names]
@@ -302,7 +268,7 @@ Fix show names that parse wrong or don't match TVDB:
 
 ### TV orphan overrides
 
-Map bare "Season N" folders with no show name:
+For bare `Season N` folders with no show name context:
 
 ```toml
 [overrides.tv_orphans]
@@ -317,18 +283,18 @@ Run `medialnk sync --dry-run -v` to identify what needs overrides.
 ## Recommended workflow
 
 ```bash
-# Preview
+# Preview first
 medialnk sync --dry-run -v > dry-run.txt
 
-# Review, add overrides, repeat until clean
+# Review, add overrides to medialnk.toml, repeat until clean
 
 # Run for real
 medialnk sync
 
 # Point Jellyfin/Plex at movies-linked/ and tv-linked/
 
-# Arr import: manual import against linked dirs with rename OFF
-# Re-enable rename after initial import
+# For arr import: manual import against linked dirs with rename OFF
+# Re-enable rename after initial import completes
 ```
 
 ### Automated/scheduled runs
@@ -341,38 +307,56 @@ Per-run logs are written to the configured `log_dir` regardless of console verbo
 
 ---
 
-## File structure
-
-```
-medialnk/
-  __init__.py       Package version
-  __main__.py       Entry point (python3 -m medialnk)
-  cli.py            Subcommands, logger, arg parser
-  config.py         TOML loading, validation
-  common.py         Regex, PathGuard, filesystem helpers
-  movies.py         Movie scanning + linking
-  tv.py             TV scanning + linking
-  resolver.py       TMDB lookups, confidence checking
-  test_library.py   Fake library generator
-medialnk.toml       Default config template
-```
-
----
-
 ## Testing
 
 ```bash
-# Generate test library with matching config
+# Generate a test library
 medialnk test-library /tmp/test-lib
 
 # Dry run against it
 medialnk --config /tmp/test-lib/medialnk.toml sync --dry-run -v
 
-# Live run (auto-accept)
+# Live run
 medialnk --config /tmp/test-lib/medialnk.toml sync --yes -v
 
 # Validate
 medialnk --config /tmp/test-lib/medialnk.toml validate
 ```
 
-The test library covers all parsing scenarios: multi-version movies, miniseries, Part.N ambiguity, duplicate seasons, bare episode files in every supported format, apostrophe variations, trailing years, pass-through folders, orphan overrides, sample files, and all recognized video extensions.
+The test library covers all parsing scenarios: multi-version movies, miniseries, Part.N ambiguity, duplicate seasons, bare episode files in every supported format, apostrophe variations, trailing years, pass-through folders, orphan overrides, and all recognized video extensions.
+
+---
+
+## File structure
+
+```
+medialnk/
+  cmd/
+    root.go          # cobra root, global flags, version
+    sync.go          # sync subcommand
+    clean.go         # clean subcommand
+    validate.go      # validate subcommand
+    watch.go         # watch subcommand (stub)
+    testlib.go       # test-library subcommand
+  internal/
+    config/
+      config.go      # TOML loading, validation, path resolution
+    common/
+      pathguard.go   # SafePath type, NewSafePath, write functions
+      symlink.go     # symlink helpers
+      video.go       # video extension list, file detection
+    movies/
+      movies.go      # movie scanning + linking
+      parse.go       # scene name parsing
+    tv/
+      tv.go          # TV scanning + linking
+      parse.go       # show name extraction
+      episodes.go    # episode format regexes
+    resolver/
+      tmdb.go        # TMDB lookups via stdlib net/http
+      confidence.go  # word overlap, confidence checking
+    testlib/
+      generate.go    # fake library generator
+  main.go
+  medialnk.toml      # default config template
+```

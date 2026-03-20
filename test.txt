@@ -1,4 +1,0 @@
-python3 -m medialnk test-library /tmp/test --reset
-python3 -m medialnk --config /tmp/test/medialnk.toml sync --dry-run -v
-python3 -m medialnk --config /tmp/test/medialnk.toml sync --yes -v
-python3 -m medialnk --config /tmp/test/medialnk.toml validate
