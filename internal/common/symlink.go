@@ -19,6 +19,17 @@ func HostToContainer(path, hostRoot, containerRoot string) (string, error) {
 	return containerRoot + path[len(hostRoot):], nil
 }
 
+// ContainerToHost translates a container-side absolute path to its host
+// equivalent by replacing the container root prefix with the host root.
+// Returns the path unchanged if it does not start with containerRoot
+// or if either root is empty.
+func ContainerToHost(path, hostRoot, containerRoot string) string {
+	if hostRoot == "" || containerRoot == "" || !strings.HasPrefix(path, containerRoot) {
+		return path
+	}
+	return hostRoot + path[len(containerRoot):]
+}
+
 // MakeSymlink creates a symlink at linkPath pointing to targetHostPath
 // (translated to container coordinates). Returns true if the symlink was
 // created, false if it already existed (skip) or an error occurred.
@@ -75,9 +86,7 @@ func SymlinkTargetExists(linkPath, hostRoot, containerRoot string) bool {
 		return false
 	}
 	// Translate container path back to host for stat check.
-	if hostRoot != "" && containerRoot != "" && strings.HasPrefix(target, containerRoot) {
-		target = hostRoot + target[len(containerRoot):]
-	}
+	target = ContainerToHost(target, hostRoot, containerRoot)
 	_, err = os.Stat(target)
 	return err == nil
 }

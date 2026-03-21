@@ -48,11 +48,23 @@ type rawOverrides struct {
 	MovieTitles map[string]string          `toml:"movie_titles"`
 }
 
+type rawHealth struct {
+	Enabled        *bool  `toml:"enabled"`
+	MinSourceFiles int    `toml:"min_source_files"`
+	SentinelFile   string `toml:"sentinel_file"`
+}
+
+type rawSync struct {
+	CleanAfterSync *bool `toml:"clean_after_sync"`
+}
+
 type rawConfig struct {
 	Paths     rawPaths     `toml:"paths"`
 	TMDB      rawTMDB      `toml:"tmdb"`
 	Logging   rawLogging   `toml:"logging"`
 	Overrides rawOverrides `toml:"overrides"`
+	Health    rawHealth    `toml:"health"`
+	Sync      rawSync      `toml:"sync"`
 }
 
 // Config is the resolved, validated configuration for a medialnk run.
@@ -86,6 +98,14 @@ type Config struct {
 	TVNameOverrides    map[string]string
 	TVOrphanOverrides  map[string]OrphanOverride
 	MovieTitleOverrides map[string]string // parsed but not yet applied (Phase 2.2)
+
+	// Health checks
+	HealthEnabled      bool
+	HealthMinFiles     int
+	HealthSentinelFile string
+
+	// Sync behavior
+	CleanAfterSync bool
 }
 
 func resolve(val, defaultVal, root string) string {
@@ -161,6 +181,22 @@ func Load(path string) (*Config, error) {
 		cfg.MovieTitleOverrides = map[string]string{}
 	}
 
+	// Health checks — default enabled with 10-file minimum.
+	cfg.HealthEnabled = true
+	if raw.Health.Enabled != nil {
+		cfg.HealthEnabled = *raw.Health.Enabled
+	}
+	cfg.HealthMinFiles = 10
+	if raw.Health.MinSourceFiles > 0 {
+		cfg.HealthMinFiles = raw.Health.MinSourceFiles
+	}
+	cfg.HealthSentinelFile = raw.Health.SentinelFile
+
+	// Sync behavior — clean_after_sync defaults to false.
+	if raw.Sync.CleanAfterSync != nil {
+		cfg.CleanAfterSync = *raw.Sync.CleanAfterSync
+	}
+
 	return cfg, nil
 }
 
@@ -188,6 +224,10 @@ func (c *Config) Summary() string {
 	if c.TMDBApiKey != "" {
 		tmdbStatus = "set"
 	}
+	healthStatus := "enabled"
+	if !c.HealthEnabled {
+		healthStatus = "disabled"
+	}
 	return fmt.Sprintf(
 		"  Host root:      %s\n"+
 			"  Container root: %s\n"+
@@ -196,12 +236,14 @@ func (c *Config) Summary() string {
 			"  Movies linked:  %s\n"+
 			"  TV linked:      %s\n"+
 			"  TMDB key:       %s\n"+
-			"  TV overrides:   %d names, %d orphans",
+			"  TV overrides:   %d names, %d orphans\n"+
+			"  Health checks:  %s (min %d files)",
 		c.HostRoot, c.ContainerRoot,
 		c.MoviesSource, c.TVSource,
 		c.MoviesLinked, c.TVLinked,
 		tmdbStatus,
 		len(c.TVNameOverrides), len(c.TVOrphanOverrides),
+		healthStatus, c.HealthMinFiles,
 	)
 }
 

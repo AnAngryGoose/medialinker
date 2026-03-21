@@ -10,8 +10,10 @@ import (
 
 	"github.com/AnAngryGoose/medialnk/internal/common"
 	"github.com/AnAngryGoose/medialnk/internal/config"
+	"github.com/AnAngryGoose/medialnk/internal/health"
 	"github.com/AnAngryGoose/medialnk/internal/logger"
 	"github.com/AnAngryGoose/medialnk/internal/movies"
+	"github.com/AnAngryGoose/medialnk/internal/orphans"
 	"github.com/AnAngryGoose/medialnk/internal/state"
 	"github.com/AnAngryGoose/medialnk/internal/tv"
 )
@@ -99,6 +101,23 @@ func runSync(cmd *cobra.Command, args []string) error {
 	}
 	log.Verbose("[GUARD] %d source(s), %d output(s)", len(cfg.SourceDirs), len(cfg.OutputDirs))
 
+	// Health checks.
+	if cfg.HealthEnabled {
+		results, healthy := health.Check(cfg)
+		for _, r := range results {
+			if r.Pass {
+				log.Verbose("[HEALTH] %s: OK (%d+ video files)", r.Label, r.VideoCount)
+			} else {
+				log.Quiet("[ERROR] Health check failed: %s: %s", r.Label, r.Reason)
+			}
+		}
+		if !healthy {
+			log.Quiet("[ERROR] Source directories failed health checks. Aborting.")
+			log.Quiet("  Disable with [health] enabled = false in config, or check your mounts.")
+			os.Exit(1)
+		}
+	}
+
 	for _, d := range cfg.OutputDirs {
 		if _, err := common.ValidateOutputDir(d, syncDryRun); err != nil {
 			os.Exit(1)
@@ -131,6 +150,30 @@ func runSync(cmd *cobra.Command, args []string) error {
 					log.Normal("[WARN] tv state: %v", err)
 				}
 			}
+		}
+	}
+
+	// Auto-clean broken symlinks after sync.
+	if cfg.CleanAfterSync && !syncDryRun {
+		totalCleaned := 0
+		for _, d := range cfg.OutputDirs {
+			if sp, err := common.NewSafePath(d, cfg.OutputDirs); err == nil {
+				if n, err := common.CleanBrokenSymlinks(sp, cfg.HostRoot, cfg.ContainerRoot); err == nil && n > 0 {
+					log.Normal("[CLEAN] %s: removed %d broken symlink(s)", d, n)
+					totalCleaned += n
+				}
+			}
+		}
+		if totalCleaned > 0 {
+			log.Normal("[CLEAN] %d broken symlink(s) removed total", totalCleaned)
+		}
+	}
+
+	// Orphan count.
+	if report, err := orphans.Scan(cfg); err == nil {
+		if n := report.TotalOrphans(); n > 0 {
+			log.Normal("[ORPHANS] %d source files unlinked (%.1f%% coverage)",
+				n, report.CoveragePct())
 		}
 	}
 

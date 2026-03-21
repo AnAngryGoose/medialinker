@@ -9,6 +9,7 @@ import (
 
 	"github.com/AnAngryGoose/medialnk/internal/common"
 	"github.com/AnAngryGoose/medialnk/internal/config"
+	"github.com/AnAngryGoose/medialnk/internal/health"
 	"github.com/AnAngryGoose/medialnk/internal/logger"
 )
 
@@ -82,6 +83,23 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		ok = false
 	} else {
 		log.Normal("[PASS] PathGuard valid.")
+	}
+
+	// Health checks.
+	if cfg.HealthEnabled {
+		results, healthy := health.Check(cfg)
+		for _, r := range results {
+			if r.Pass {
+				log.Normal("[PASS] Health: %s — %d+ video files", r.Label, r.VideoCount)
+			} else {
+				log.Quiet("[FAIL] Health: %s — %s", r.Label, r.Reason)
+			}
+		}
+		if !healthy {
+			ok = false
+		}
+	} else {
+		log.Normal("[INFO] Health checks disabled.")
 	}
 
 	log.Close()
