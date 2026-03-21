@@ -29,7 +29,7 @@ Point Jellyfin at `movies-linked/` and `tv-linked/`. Done.
 
 **Source files are immutable.** Torrents keep seeding from unchanged paths. The presentation layer is entirely disposable. Delete it and rebuild in seconds. This is enforced at the compiler level via `SafePath` — write functions cannot accept raw string paths, so source directories are unreachable by construction, not by convention.
 
-**Fills the arr gap.** Radarr and Sonarr manage content they downloaded. They cannot import a years-old disorganized library without something else first organizing it. medialnk handles everything outside arr's awareness: manually grabbed torrents, legacy libraries, specific encodes. Radarr manages its own downloads into its own output directory. medialnk manages everything else into a separate output directory. Jellyfin points at both. No collisions.
+**Fills the arr gap.** Radarr and Sonarr manage content they downloaded. They can't import a years-old disorganized library without something first organizing it. medialnk handles everything outside arr's awareness: manually grabbed torrents, legacy libraries, specific encodes. Radarr manages its own downloads. medialnk manages everything else. Jellyfin points at both. No collisions.
 
 ---
 
@@ -60,7 +60,54 @@ medialnk sync --dry-run -v    # preview first
 medialnk sync                  # run for real
 ```
 
-Recommended workflow: dry run, review the output, add any needed overrides to config, repeat until clean, then run live.
+Dry run first, review output, add overrides to config if needed, then run live.
+
+---
+
+## Features
+
+**Movie pipeline**
+- Parses scene-format names to extract title and year
+- Groups multiple quality versions of the same film under one canonical folder
+- Detects miniseries misplaced in `/movies/` and routes them to TV automatically
+- Resolves yearless entries via TMDB; flags Part.N folders as ambiguous with a prompt
+
+**TV pipeline (two-pass)**
+- Pass 1: groups season folders by show name, creates season symlinks or passthroughs
+- Pass 2: handles bare episode files scattered in source with no parent folder
+- Supported formats: `S01E05`, `S01E05-E06` (multi-ep combined), `3x05`, `Episode.4`
+- Duplicate seasons at different qualities prompt for a choice
+- Conflict resolution converts season symlinks to real directories when individual episode links are needed
+
+**TMDB resolution**
+- Resolves show and movie names to canonical titles
+- Confidence checking prevents false matches; falls back to parsed name when uncertain
+- Transient network failures do not poison the cache
+
+**Source protection**
+- `SafePath` is a Go type that can only be constructed from validated output paths
+- All filesystem write functions accept only `SafePath`, never raw strings
+- Source directories cannot be reached by any write path — compile-time enforcement, not runtime
+
+**State tracking**
+- After every real sync, `.medialnk-state.json` is written to each output directory
+- Records everything linked, skipped, flagged, and unmatched with timestamps
+- Dry runs never write or update state files
+
+**Orphan scanner**
+- Walks output symlinks to find source files with no corresponding link
+- Reports coverage percentage per pipeline
+- Runs automatically after sync; also available standalone via `medialnk orphans`
+
+**Health checks**
+- Before sync, validates that source directories meet a minimum video file count
+- Optional sentinel file check catches silently unmounted mergerfs drives
+- Aborts with a clear error rather than syncing against an empty mount point
+
+**Config overrides**
+- Movie title overrides for names that parse incorrectly
+- TV name overrides for canonical show name corrections
+- TV orphan overrides for bare `Season N` folders with no parseable show name
 
 ---
 
@@ -77,6 +124,10 @@ medialnk sync -q               # Quiet (errors and warnings only)
 
 medialnk clean                 # Remove broken symlinks from output dirs
 medialnk clean --dry-run
+
+medialnk orphans               # Report source files with no symlink
+medialnk orphans --json        # Machine-readable output
+medialnk orphans -q            # Counts only
 
 medialnk validate              # Check config, paths, and PathGuard
 
@@ -106,6 +157,14 @@ tv_linked = "tv-linked"
 api_key = ""                            # optional, or set TMDB_API_KEY env var
 confidence_check = true
 
+[health]
+enabled = true
+min_source_files = 10                   # abort sync if source has fewer video files
+sentinel_file = ""                      # optional: path that must exist before syncing
+
+[sync]
+clean_after_sync = false                # remove broken symlinks automatically after sync
+
 [logging]
 log_dir = "logs"
 verbosity = "normal"                    # quiet / normal / verbose / debug
@@ -122,45 +181,13 @@ verbosity = "normal"                    # quiet / normal / verbose / debug
 
 ---
 
-## What it handles
-
-**Movies:** Parses scene names for title and year, groups multi-quality versions under one canonical folder, detects miniseries misplaced in `/movies/` and routes them to TV. Yearless entries are resolved via TMDB. Part.N folders are flagged as ambiguous and prompted.
-
-**TV:** Two-pass pipeline. Pass 1 handles season folders and multi-season packs. Pass 2 handles bare episode files scattered in the source directory. Both passes resolve show names via TMDB with configurable overrides. Duplicate seasons at different qualities prompt for a choice.
-
-**Episode formats supported:** `S01E05`, `S01E05-E06` (multi-ep), `3x05`, `Episode.4`, folder-level `1of6` and `E01` detection.
-
-**State tracking:** After each real sync, a `.medialnk-state.json` file is written to each output directory recording everything linked, skipped, flagged, and unmatched that run. Dry runs do not write state. This is the foundation for future status reporting, orphan detection, and diff/rollback.
-
-**Source protection:** `SafePath` is a Go type whose constructor validates that a path is under a registered output root. All write functions accept only `SafePath`. Raw string paths cannot reach write functions. This is a compile-time constraint, not a runtime check. Misconfiguration cannot bypass it.
-
----
-
-## Overrides
-
-For show names that parse wrong:
-```toml
-[overrides.tv_names]
-"Mystery Science Theater" = "Mystery Science Theater 3000"
-```
-
-For bare `Season N` orphan folders with no parseable show name:
-```toml
-[overrides.tv_orphans]
-"Season 1" = { show = "Little Bear", season = 1 }
-```
-
-Run `medialnk sync --dry-run -v` to identify what needs overrides.
-
----
-
 ## Automated runs
 
 ```bash
-# qBittorrent completion hook:
+# qBittorrent completion hook
 medialnk sync --yes -q
 
-# Per-run logs are always written to log_dir regardless of console verbosity
+# Per-run logs are written to log_dir regardless of console verbosity
 ```
 
 ---
